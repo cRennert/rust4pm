@@ -114,11 +114,14 @@ pub mod partial_orders {
     pub use crate::partial_orders::partial_event_log_struct::PartialOrderEventLog;
 }
 
+pub mod alignments {
+    pub mod jaccard;
+}
+
 use std::fs::File;
 use std::io::BufReader;
 use std::io::BufWriter;
 use std::path::Path;
-
 #[doc(inline)]
 pub use event_log::ocel;
 

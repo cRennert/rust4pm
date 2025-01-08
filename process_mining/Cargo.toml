@@ -27,6 +27,8 @@ rusqlite = { version = "0.32.1", features = ["bundled","chrono", "serialize"], o
 polars = {version = "0.43.1", features = ["dtype-slim","timezones","partition_by"], optional = true}
 petgraph = "0.6.5"
 ordered-float = "4.4.0"
+hashbag = "0.1.12"
+ndarray = "0.16.1"
 
 [features]
 
