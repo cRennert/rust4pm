@@ -2,6 +2,7 @@ use crate::event_log::event_log_struct::EventLogClassifier;
 use crate::EventLog;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
+use std::cmp::max;
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
@@ -71,6 +72,30 @@ impl<'a> DirectlyFollowsGraph<'a> {
         });
 
         result
+    }
+
+    pub fn recalculate_activity_counts(&mut self) {
+        let mut updated_activities: HashMap<Activity, u32> = HashMap::with_capacity(self.activities.len());
+        
+        self.activities.iter().for_each(|(act, _)| {
+            let mut new_count: u32 = 0;
+
+            new_count = self
+                .get_ingoing_df_relations(act)
+                .iter()
+                .map(|dfr| self.directly_follows_relations.get(dfr).unwrap())
+                .sum();
+            new_count = new_count.max(
+                self.get_outgoing_df_relations(act)
+                    .iter()
+                    .map(|dfr| self.directly_follows_relations.get(dfr).unwrap())
+                    .sum(),
+            );
+
+            updated_activities.insert(act.clone(), new_count);
+        });
+        
+        self.activities = updated_activities;
     }
 
     /// Serialize to JSON string.

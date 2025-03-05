@@ -3,6 +3,7 @@ use ordered_float::OrderedFloat;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+use std::ops::Deref;
 use uuid::Uuid;
 
 #[cfg(feature = "dataframes")]
@@ -449,6 +450,16 @@ impl EventLog {
     }
 
     ///
+    /// Returns the number of events in the event log
+    ///
+    pub fn num_of_events(&self) -> usize {
+        self.traces
+            .iter()
+            .map(|trace: &Trace| trace.events.len())
+            .sum()
+    }
+
+    ///
     /// Clones a new `EventLog` that contains the same attributes, extensions, classifiers,
     /// global trace attributes, and global event attributes but does initially not contain any
     /// traces.
@@ -462,6 +473,19 @@ impl EventLog {
             global_trace_attrs: self.global_trace_attrs.clone(),
             global_event_attrs: self.global_event_attrs.clone(),
         }
+    }
+
+    ///
+    /// Computes a dictionary from a trace's name to the trace for all traces in the event log
+    ///
+    pub fn find_name_trace_dictionary(&self) -> HashMap<&Attribute, &Trace> {
+        let mut result: HashMap<&Attribute, &Trace> = HashMap::new();
+
+        self.traces.iter().for_each(|t| {
+            result.insert(self.get_trace_attribute(t, "concept:name").unwrap(), t);
+        });
+
+        result
     }
 
     ///
@@ -545,7 +569,7 @@ impl Default for EventLogClassifier {
     }
 }
 impl EventLogClassifier {
-    /// Delimiter for combining the values defined by the classifer to form a single class identity string
+    /// Delimiter for combining the values defined by the classifier to form a single class identity string
     pub const DELIMITER: &'static str = "+";
     ///
     /// Get the class identity (joined with [`EventLogClassifier::DELIMITER`])

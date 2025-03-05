@@ -25,7 +25,7 @@ use std::collections::HashSet;
 /// use std::collections::HashSet;
 /// use process_mining::event_log::event_log_splitter::random_activity_split_max_bins;
 ///
-/// // Create the set of activities
+/// // Create a set of activities
 /// let mut activities = HashSet::new();
 /// activities.insert("Admission IC");
 /// activities.insert("ER Sepsis Triage");
@@ -379,7 +379,8 @@ impl<'a> RandomEventLogSplitter<'a> {
     ///
     pub fn split(&mut self) -> Vec<EventLog> {
         // Creates a uniform distribution used to randomly choose the event log to assign an event to.
-        let uniform_distribution: Uniform<usize> = Uniform::new(0,self.num_split_event_logs).unwrap();
+        let uniform_distribution: Uniform<usize> =
+            Uniform::new(0, self.num_split_event_logs).unwrap();
 
         // Initializes the result list of sub event logs
         let mut result: Vec<EventLog> = Vec::with_capacity(self.num_split_event_logs);
@@ -422,6 +423,7 @@ mod tests {
     use crate::utils::test_utils::get_test_data_path;
     use crate::{import_xes_file, XESImportOptions};
     use std::collections::HashSet;
+    use crate::event_log::event_log_struct::EventLogClassifier;
 
     #[test]
     fn test_activity_based_event_log_splitter() {
@@ -432,7 +434,7 @@ mod tests {
 
         let mut split_sets: Vec<HashSet<&str>> = Vec::new();
 
-        let mut set_1 = HashSet::new();
+        let mut set_1: HashSet<&str> = HashSet::new();
         set_1.insert("Admission IC");
         set_1.insert("ER Sepsis Triage");
         set_1.insert("IV Antibiotics");
@@ -441,7 +443,7 @@ mod tests {
 
         split_sets.push(set_1);
 
-        let mut set_2 = HashSet::new();
+        let mut set_2: HashSet<&str> = HashSet::new();
         set_2.insert("Admission NC");
         set_2.insert("CRP");
         set_2.insert("IV Liquid");
@@ -450,7 +452,7 @@ mod tests {
 
         split_sets.push(set_2);
 
-        let mut set_3 = HashSet::new();
+        let mut set_3: HashSet<&str> = HashSet::new();
         set_3.insert("ER Registration");
         set_3.insert("ER Triage");
         set_3.insert("LacticAcid");
@@ -482,6 +484,16 @@ mod tests {
         assert_eq!(counts[0], 2716);
         assert_eq!(counts[1], 5246);
         assert_eq!(counts[2], 7252);
+
+        let name_classifier: EventLogClassifier = EventLogClassifier::default();
+        for i in 0..3 {
+            result_event_logs[i].traces.iter().for_each(|trace| {
+                trace.events.iter().for_each(|event| {
+                    let event_name: String = name_classifier.get_class_identity(event);
+                    assert!(split_sets[i].contains(event_name.as_str()));
+                })
+            })
+        }
     }
 
     #[test]
@@ -526,6 +538,22 @@ mod tests {
         let result_event_logs = &splitter.split();
         for event_log in result_event_logs {
             assert_eq!(event_log.traces.len(), 1050);
+        }
+
+        let event_count: usize = result_event_logs.iter().map(|event_log| {
+            event_log.num_of_events()
+        }).sum::<usize>();
+        
+        assert_eq!(event_count, 11855);
+        
+        let name_classifier: EventLogClassifier = EventLogClassifier::default();
+        for i in 0..3 {
+            result_event_logs[i].traces.iter().for_each(|trace| {
+                trace.events.iter().for_each(|event| {
+                    let event_name: String = name_classifier.get_class_identity(event);
+                    assert!(split_sets[i].contains(event_name.as_str()));
+                })
+            })
         }
     }
 }

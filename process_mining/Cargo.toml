@@ -16,31 +16,35 @@ rust-version = "1.77"
 [dependencies]
 rayon = "1.7.0"
 serde_json = "1.0.105"
-serde = {version = "1.0.188", features = ["derive"]}
+serde = { version = "1.0.188", features = ["derive"] }
 serde_with = "3.11.0"
-chrono = {version = "0.4.34", features = ["serde"] }
-uuid = {version = "1.4.1", features = ["v4", "serde"]}
-quick-xml = {version = "0.31.0"}
+chrono = { version = "0.4.34", features = ["serde"] }
+uuid = { version = "1.4.1", features = ["v4", "serde"] }
+quick-xml = { version = "0.31.0" }
 flate2 = "1.0"
-graphviz-rust = { version = "0.9.3", optional = true}
-rusqlite = { version = "0.32.1", features = ["bundled","chrono", "serialize"], optional = true }
-polars = {version = "0.43.1", features = ["dtype-slim","timezones","partition_by"], optional = true}
+graphviz-rust = { version = "0.9.3", optional = true }
+rusqlite = { version = "0.32.1", features = ["bundled", "chrono", "serialize"], optional = true }
+polars = { version = "0.43.1", features = ["dtype-slim", "timezones", "partition_by"], optional = true }
 petgraph = "0.6.5"
+primes = "0.4.0"
 ordered-float = "4.4.0"
 rand = "0.9.0"
+tfhe = { version = "1.0.0", features = ["boolean", "shortint", "integer"] }
+tqdm = "0.7.0"
+simple-tqdm = { version = "0.2.0", features = ["rayon"] }
 
 [features]
 
 # Enables exporting Petri nets as PNG/SVG/... images using graphviz.
 # Note: graphviz needs to be locally installed to the PATH for the image export functions to work.
-graphviz-export = ["dep:graphviz-rust"] 
+graphviz-export = ["dep:graphviz-rust"]
 
 # Enables OCEL 2.0 SQLite import and export functionality
 # Note: this might not work on certain architectures or machines if SQLite is not available/cannot be build
-ocel-sqlite = ["dep:rusqlite"] 
+ocel-sqlite = ["dep:rusqlite"]
 
 # Enables polars DataFrame conversion from/to event data structs
-dataframes = ["dep:polars"] 
+dataframes = ["dep:polars"]
 
 
 
