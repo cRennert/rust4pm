@@ -294,6 +294,8 @@ pub struct PublicKeyOrganization {
     server_key: Option<ServerKey>,
     event_log: EventLog,
     activity_to_pos: HashMap<String, usize>,
+    start: Option<FheUint8>,
+    end: Option<FheUint8>,
 }
 
 impl PublicKeyOrganization {
@@ -303,6 +305,8 @@ impl PublicKeyOrganization {
             server_key: None,
             event_log,
             activity_to_pos: HashMap::new(),
+            start: None,
+            end: None,
         }
     }
 
@@ -310,6 +314,14 @@ impl PublicKeyOrganization {
         self.public_key = Some(public_key);
         set_server_key(server_key.clone());
         self.server_key = Some(server_key);
+        self.start = Some(crate::federated::organization_struct::encrypt_activity(
+            1,
+            self.public_key.as_ref().unwrap(),
+        ));
+        self.end = Some(crate::federated::organization_struct::encrypt_activity(
+            2,
+            self.public_key.as_ref().unwrap(),
+        ));
     }
 
     pub fn find_activities(&self) -> HashSet<String> {
@@ -427,6 +439,15 @@ impl PublicKeyOrganization {
         //       result: &mut Vec<(FheUint8, FheUint8)>,
     ) -> Vec<(FheUint8, FheUint8)> {
         let mut result: Vec<(FheUint8, FheUint8)> = Vec::new();
+        
+        if own_activities.is_empty() {
+            self.add_full_trace(&foreign_activities, &mut result);
+            return result;
+        } else if foreign_activities.is_empty() {
+            self.add_full_trace(&own_activities, &mut result);
+            return result;
+        }
+        
         let mut comparison_foreign_to_own: HashMap<(usize, usize), FheBool> = HashMap::new();
         let mut comparison_own_to_foreign: HashMap<(usize, usize), FheBool> = HashMap::new();
         for (i, foreign_timestamp) in foreign_timestamps.iter().enumerate() {
@@ -440,9 +461,8 @@ impl PublicKeyOrganization {
         }
 
         // Find start
-        let start = encrypt_activity(1, self.public_key.as_ref().unwrap());
         result.push((
-            start,
+            self.start.as_ref().unwrap().clone(),
             comparison_foreign_to_own
                 .get(&(0, 0))
                 .unwrap_or(&encrypt_fhe_boolean(
@@ -468,7 +488,7 @@ impl PublicKeyOrganization {
                     &own_activities[own_activities.len() - 1],
                     &foreign_activities[foreign_activities.len() - 1],
                 ),
-            end,
+            self.end.as_ref().unwrap().clone(),
         ));
 
         self.find_progress_pairs_non_crossing(
@@ -504,6 +524,23 @@ impl PublicKeyOrganization {
         );
 
         result
+    }
+
+    fn add_full_trace(&self, activities: &Vec<FheUint8>, result: &mut Vec<(FheUint8, FheUint8)>) {
+        if !activities.is_empty() {
+            result.push((self.start.as_ref().unwrap().clone(), activities[0].clone()));
+            result.push((
+                activities[activities.len() - 1].clone(),
+                self.end.as_ref().unwrap().clone(),
+            ));
+        }
+
+        for i in 0..activities.len() - 1 {
+            result.push((
+                activities.get(i).unwrap() + 0,
+                activities.get(i + 1).unwrap() + 0,
+            ));
+        }
     }
 
     fn find_progress_pairs_crossing(
