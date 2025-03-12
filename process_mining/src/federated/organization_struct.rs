@@ -14,10 +14,7 @@ use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
 use std::ops::{BitAnd, BitAndAssign, BitOrAssign};
 use tfhe::prelude::*;
-use tfhe::{
-    generate_keys, set_server_key, ClientKey, Config, ConfigBuilder, FheBool, FheUint32, FheUint8,
-    PublicKey, ServerKey,
-};
+use tfhe::{generate_keys, set_server_key, ClientKey, CompressedServerKey, Config, ConfigBuilder, FheBool, FheUint32, FheUint8, PublicKey, ServerKey};
 
 pub fn find_activities(event_log: &EventLog) -> HashSet<String> {
     let mut result = HashSet::new();
@@ -221,8 +218,8 @@ impl PrivateKeyOrganization {
         compute_case_to_trace_private(&self.activity_to_pos, &self.private_key, &self.event_log)
     }
 
-    pub fn get_public_keys(&self) -> (ServerKey, PublicKey) {
-        (self.server_key.clone(), self.public_key.clone())
+    pub fn get_public_keys(&self) -> (CompressedServerKey, PublicKey) {
+        (CompressedServerKey::new(&self.private_key), self.public_key.clone())
     }
 
     pub fn update_with_foreign_activities(
@@ -577,9 +574,10 @@ impl PublicKeyOrganization {
         (predecessor, self.end.as_ref().unwrap().clone())
     }
 
-    pub fn set_public_keys(&mut self, public_key: PublicKey, server_key: ServerKey) {
+    pub fn set_public_keys(&mut self, public_key: PublicKey, server_key: CompressedServerKey) {
         self.public_key = Some(public_key);
-        rayon::broadcast(|_| set_server_key(server_key.clone()));
+        let gpu_key = server_key.decompress_to_gpu();
+        rayon::broadcast(|_| set_server_key(gpu_key));
     }
 
     pub fn find_activities(&self) -> HashSet<String> {
