@@ -46,7 +46,7 @@ pub fn encrypt_value_private(value: u32, private_key: &ClientKey) -> FheUint32 {
     // FheUint32::encrypt_trivial(value)
 }
 
-pub fn encrypt_activity_private(value: u8, private_key: &ClientKey) -> FheUint8 {
+pub fn encrypt_activity_private(value: u16, private_key: &ClientKey) -> FheUint8 {
     FheUint8::encrypt(value, private_key)
     // FheUint8::encrypt_trivial(value)
 }
@@ -61,7 +61,7 @@ pub fn encrypt_value(value: u32, public_key: &PublicKey) -> FheUint32 {
     // FheUint32::encrypt_trivial(value)
 }
 
-pub fn encrypt_activity(value: u8, public_key: &PublicKey) -> FheUint8 {
+pub fn encrypt_activity(value: u16, public_key: &PublicKey) -> FheUint8 {
     FheUint8::encrypt(value, public_key)
     // FheUint8::encrypt_trivial(value)
 }
@@ -83,8 +83,8 @@ pub fn preprocess_trace_private(
 
     trace.events.iter().for_each(|event| {
         let activity: String = classifier.get_class_identity(event);
-        let activity_pos: u8 =
-            u8::try_from(activity_to_pos.get(&activity).unwrap().clone()).unwrap_or(0);
+        let activity_pos: u16 =
+            u16::try_from(activity_to_pos.get(&activity).unwrap().clone()).unwrap_or(0);
         activities.push(encrypt_activity_private(activity_pos, private_key));
         timestamps.push(encrypt_value_private(get_timestamp(event), private_key));
     });
@@ -129,8 +129,8 @@ pub fn preprocess_trace(
 
     trace.events.iter().for_each(|event| {
         let activity: String = classifier.get_class_identity(event);
-        let activity_pos: u8 =
-            u8::try_from(activity_to_pos.get(&activity).unwrap().clone()).unwrap_or(0);
+        let activity_pos: u16 =
+            u16::try_from(activity_to_pos.get(&activity).unwrap().clone()).unwrap_or(0);
         activities.push(encrypt_activity(activity_pos, public_key));
         timestamps.push(get_timestamp(event));
     });
@@ -204,7 +204,7 @@ impl PrivateKeyOrganization {
         result
     }
 
-    fn decrypt_activity(&self, val: FheUint8) -> u8 {
+    fn decrypt_activity(&self, val: FheUint8) -> u16 {
         val.decrypt(&self.private_key)
     }
 
@@ -583,7 +583,7 @@ impl PublicKeyOrganization {
 
     pub fn set_activity_to_pos(&mut self, activity_to_pos: HashMap<String, usize>) {
         self.activity_to_pos = activity_to_pos;
-        let activities_len = u8::try_from(self.activity_to_pos.len()).unwrap();
+        let activities_len = u16::try_from(self.activity_to_pos.len()).unwrap();
         self.bottom = Some(encrypt_activity(
             activities_len - 3,
             self.public_key.as_ref().unwrap(),
@@ -611,7 +611,7 @@ impl PublicKeyOrganization {
         mut foreign_case_to_trace: HashMap<String, (Vec<FheUint8>, Vec<FheUint32>)>,
     ) {
         println!("Sanitize activities from A in B");
-        let max_activities: u8 = u8::try_from(self.activity_to_pos.len() - 3 - 1).unwrap_or(0);
+        let max_activities: u16 = u16::try_from(self.activity_to_pos.len() - 3 - 1).unwrap_or(0);
         let len = foreign_case_to_trace.len() as u64;
         let bar = ProgressBar::new(len);
         bar.set_style(ProgressStyle::with_template("[{elapsed_precise}/{eta_precise}] {wide_bar} {pos}/{len}")
