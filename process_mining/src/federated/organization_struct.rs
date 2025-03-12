@@ -7,33 +7,13 @@ use primes::PrimeSet;
 use rand::rng;
 use rand::seq::SliceRandom;
 use rayon::prelude::*;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
-use std::ops::{BitAnd, BitOr, Not};
+use std::ops::{BitAnd, BitAndAssign, BitOrAssign};
 use tfhe::prelude::*;
-use tfhe::{
-    generate_keys, set_server_key, ClientKey, Config, ConfigBuilder, FheBool, FheUint32, FheUint8,
-    PublicKey, ServerKey,
-};
+use tfhe::{generate_keys, set_server_key, ClientKey, Config, ConfigBuilder, FheBool, FheUint, FheUint32, FheUint8, FheUint8Id, PublicKey, ServerKey};
 use tqdm::tqdm;
-///
-/// Enum declaring the different messages and data that `Organization`s can send to each other.
-///
-#[derive(Clone, Serialize, Deserialize)]
-pub enum FederatedMessage {
-    RequestKey,
-    Okay,
-    /// Sends the public and server key of the own organization with the corresponding organization
-    /// name. Public key can be used for encryption by the other parties.
-    SendKeys((String, (PublicKey, ServerKey))),
-    /// Sends a case identifier and an encrypted timestamp that can be used to compare the next
-    /// upcoming `event`'s timestamp with the encrypted timestamp.
-    RequestComparison((Attribute, u32)),
-    ///
-    SendComparisonResult((Attribute, FheBool)),
-    DeclareWinner((Attribute, String)),
-}
 
 pub fn find_activities(event_log: &EventLog) -> HashSet<String> {
     let mut result = HashSet::new();
@@ -58,33 +38,33 @@ pub fn get_timestamp(event: &Event) -> u32 {
 }
 
 pub fn encrypt_value_private(value: u32, private_key: &ClientKey) -> FheUint32 {
-    // FheUint32::encrypt(value, private_key)
-    FheUint32::encrypt_trivial(value)
+    FheUint32::encrypt(value, private_key)
+    // FheUint32::encrypt_trivial(value)
 }
 
 pub fn encrypt_activity_private(value: u8, private_key: &ClientKey) -> FheUint8 {
-    // FheUint8::encrypt(value, private_key)
-    FheUint8::encrypt_trivial(value)
+    FheUint8::encrypt(value, private_key)
+    // FheUint8::encrypt_trivial(value)
 }
 
 pub fn encrypt_fhe_boolean_private(bool: bool, private_key: &ClientKey) -> FheBool {
-    // FheBool::encrypt(bool, private_key)
-    FheBool::encrypt_trivial(bool)
+    FheBool::encrypt(bool, private_key)
+    // FheBool::encrypt_trivial(bool)
 }
 
 pub fn encrypt_value(value: u32, public_key: &PublicKey) -> FheUint32 {
-    // FheUint32::encrypt(value, public_key)
-    FheUint32::encrypt_trivial(value)
+    FheUint32::encrypt(value, public_key)
+    // FheUint32::encrypt_trivial(value)
 }
 
 pub fn encrypt_activity(value: u8, public_key: &PublicKey) -> FheUint8 {
-    // FheUint8::encrypt(value, public_key)
-    FheUint8::encrypt_trivial(value)
+    FheUint8::encrypt(value, public_key)
+    // FheUint8::encrypt_trivial(value)
 }
 
 pub fn encrypt_fhe_boolean(bool: bool, public_key: &PublicKey) -> FheBool {
-    // FheBool::encrypt(bool, public_key)
-    FheBool::encrypt_trivial(bool)
+    FheBool::encrypt(bool, public_key)
+    // FheBool::encrypt_trivial(bool)
 }
 
 pub fn preprocess_trace_private(
@@ -118,12 +98,12 @@ pub fn compute_case_to_trace_private(
     let name_to_trace: HashMap<&Attribute, &Trace> = event_log.find_name_trace_dictionary();
 
     println!("Encrypt data organization A");
-    for (name, trace) in tqdm(name_to_trace) {
+    tqdm(name_to_trace).into_iter().for_each(|(name, trace)| {
         result.insert(
             name.clone(),
             preprocess_trace_private(activity_to_pos, private_key, trace),
         );
-    }
+    });
 
     result
 }
@@ -159,25 +139,27 @@ pub fn compute_case_to_trace(
     let name_to_trace: HashMap<&Attribute, &Trace> = event_log.find_name_trace_dictionary();
 
     println!("Encrypt data organization B");
-    for (name, trace) in tqdm(name_to_trace) {
+    tqdm(name_to_trace).into_iter().for_each(|(name, trace)| {
         result.insert(
             name.clone(),
             preprocess_trace(activity_to_pos, public_key, trace),
         );
-    }
+    });
 
     result
 }
 
-pub struct PrivateKeyOrganization {
+pub struct PrivateKeyOrganization<'a> {
     private_key: ClientKey,
     server_key: ServerKey,
     public_key: PublicKey,
     event_log: EventLog,
     activity_to_pos: HashMap<String, usize>,
+    pos_to_activity: HashMap<usize, String>,
+    dfg: DirectlyFollowsGraph<'a>,
 }
 
-impl PrivateKeyOrganization {
+impl<'a> PrivateKeyOrganization<'a> {
     pub fn new(event_log: EventLog) -> Self {
         let config: Config = ConfigBuilder::default().build();
         let (private_key, server_key): (ClientKey, ServerKey) = generate_keys(config);
@@ -188,7 +170,18 @@ impl PrivateKeyOrganization {
             public_key,
             event_log,
             activity_to_pos: HashMap::new(),
+            pos_to_activity: HashMap::new(),
+            dfg: DirectlyFollowsGraph::default(),
         }
+    }
+
+    pub fn get_dfg(&self) -> &DirectlyFollowsGraph<'a> {
+        &self.dfg
+    }
+
+    pub fn recalculate_activity_counts(&mut self) -> &DirectlyFollowsGraph<'a> {
+        self.dfg.recalculate_activity_counts();
+        &self.dfg
     }
 
     fn decrypt_activity(&self, val: FheUint8) -> u8 {
@@ -213,87 +206,118 @@ impl PrivateKeyOrganization {
     ) -> HashMap<String, usize> {
         let mut activities: HashSet<String> = find_activities(&self.event_log);
         activities.extend(foreign_activities);
+        let activities_len = activities.len();
 
-        self.activity_to_pos.insert("bottom".to_string(), 0);
-        self.activity_to_pos.insert("start".to_string(), 1);
-        self.activity_to_pos.insert("end".to_string(), 2);
+        self.activity_to_pos.insert("bottom".to_string(), activities_len);
+        self.activity_to_pos.insert("start".to_string(), activities_len+1);
+        self.activity_to_pos.insert("end".to_string(), activities_len+2);
 
         activities.iter().enumerate().for_each(|(pos, act)| {
-            self.activity_to_pos.insert(act.clone(), pos + 3);
+            self.activity_to_pos.insert(act.clone(), pos);
+        });
+
+        self.activity_to_pos.keys().for_each(|act| {
+            if !act.eq("bottom") {
+                self.dfg.add_activity(act.clone(), 0);
+            }
+        });
+
+        self.activity_to_pos.iter().for_each(|(act, pos)| {
+            self.pos_to_activity.insert(*pos, act.clone());
+        });
+
+        self.activity_to_pos.keys().for_each(|act| {
+            if !act.eq("bottom") {
+                self.dfg.add_activity(act.clone(), 0);
+            }
         });
 
         self.activity_to_pos.clone()
     }
 
-    pub fn evaluate_secrets_to_dfg<'a>(
-        &self,
-        secret_edges: Vec<(FheUint8, FheUint8)>,
-    ) -> DirectlyFollowsGraph<'a> {
-        let mut result = DirectlyFollowsGraph::new();
-        let mut found_edges_by_pos: HashMap<(u8, u8), u32> = HashMap::new();
-
-        self.activity_to_pos.keys().for_each(|act| {
-            if !act.eq("bottom") {
-                result.add_activity(act.clone(), 0);
-            }
-        });
-
-        for (from, to) in tqdm(secret_edges) {
-            let from_pos = self.decrypt_activity(from);
-            if from_pos == 0 {
-                continue;
-            }
-
-            let to_pos = self.decrypt_activity(to);
-            if to_pos == 0 {
-                continue;
-            }
-
-            if found_edges_by_pos.contains_key(&(from_pos, to_pos)) {
-                found_edges_by_pos.insert(
-                    (from_pos, to_pos),
-                    found_edges_by_pos.get(&(from_pos, to_pos)).unwrap() + 1,
-                );
-            } else {
-                found_edges_by_pos.insert((from_pos, to_pos), 1);
-            }
+    pub fn evaluate_secret_to_dfg(&mut self, secret_edge: (FheUint8, FheUint8)) {
+        let (from, to) = secret_edge;
+        let from_pos = self.decrypt_activity(from);
+        if from_pos == 0 {
+            return;
         }
 
-        let mut pos_to_activity: HashMap<usize, String> = HashMap::new();
-        self.activity_to_pos.iter().for_each(|(act, pos)| {
-            pos_to_activity.insert(*pos, act.clone());
-        });
-
-        for ((from_pos, to_pos), freq) in found_edges_by_pos {
-            if pos_to_activity.contains_key(&(from_pos as usize))
-                & pos_to_activity.contains_key(&(to_pos as usize))
-            {
-                result.add_df_relation(
-                    pos_to_activity
-                        .get(&(from_pos as usize))
-                        .unwrap()
-                        .clone()
-                        .into(),
-                    pos_to_activity
-                        .get(&(to_pos as usize))
-                        .unwrap()
-                        .clone()
-                        .into(),
-                    freq,
-                )
-            }
+        let to_pos = self.decrypt_activity(to);
+        if to_pos == 0 {
+            return;
         }
 
-        result
+        self.dfg.add_df_relation(
+            self.pos_to_activity
+                .get(&(from_pos as usize))
+                .unwrap()
+                .clone()
+                .into(),
+            self.pos_to_activity
+                .get(&(to_pos as usize))
+                .unwrap()
+                .clone()
+                .into(),
+            1,
+        );
     }
+}
+
+///
+/// Enum declaring the different messages and data that `Organization`s can send to each other.
+///
+#[derive(Clone, Serialize, Debug)]
+pub enum ComputationInstruction {
+    FindStart(usize),
+    FindEnd(usize),
+    CrossingBToA(usize, usize, usize),
+    CrossingAToB(usize, usize, usize),
+    NonCrossingInA(usize, usize),
+    NonCrossingInB(usize, usize),
+}
+
+fn find_instructions(
+    case_pos: usize,
+    foreign_len: usize,
+    own_len: usize,
+) -> Vec<ComputationInstruction> {
+    let mut instructions = Vec::new();
+
+    if own_len == 0 && foreign_len == 0 {
+        return instructions;
+    }
+
+    instructions.push(ComputationInstruction::FindStart(case_pos));
+    instructions.push(ComputationInstruction::FindEnd(case_pos));
+
+    for i in 0..foreign_len.checked_sub(1).unwrap_or(0) {
+        instructions.push(ComputationInstruction::NonCrossingInA(case_pos, i));
+    }
+    for j in 0..own_len.checked_sub(1).unwrap_or(0) {
+        instructions.push(ComputationInstruction::NonCrossingInB(case_pos, j));
+    }
+    for i in 0..foreign_len {
+        for j in 0..own_len {
+            instructions.push(ComputationInstruction::CrossingAToB(case_pos, i, j));
+            instructions.push(ComputationInstruction::CrossingBToA(case_pos, i, j));
+        }
+    }
+
+    instructions.shuffle(&mut rng());
+    instructions
 }
 
 pub struct PublicKeyOrganization {
     public_key: Option<PublicKey>,
     event_log: EventLog,
     activity_to_pos: HashMap<String, usize>,
+    own_case_to_trace: HashMap<Attribute, (Vec<FheUint8>, Vec<u32>)>,
+    foreign_case_to_trace: HashMap<Attribute, (Vec<FheUint8>, Vec<FheUint32>)>,
+    bottom: Option<FheUint8>,
     start: Option<FheUint8>,
     end: Option<FheUint8>,
+    pub instructions: Vec<ComputationInstruction>,
+    all_case_names: Vec<Attribute>,
 }
 
 impl PublicKeyOrganization {
@@ -301,17 +325,244 @@ impl PublicKeyOrganization {
         Self {
             public_key: None,
             event_log,
+            own_case_to_trace: HashMap::new(),
+            foreign_case_to_trace: HashMap::new(),
             activity_to_pos: HashMap::new(),
+            bottom: None,
             start: None,
             end: None,
+            instructions: Vec::new(),
+            all_case_names: Vec::new(),
         }
+    }
+
+    pub fn get_instructions_len(&self) -> usize {
+        self.instructions.len()
+    }
+
+    pub fn compute_next_instruction(&mut self) -> ((FheUint8, FheUint8), bool) {
+        let instruction = self.instructions.pop().unwrap();
+        let unfinished = !self.instructions.is_empty();
+        match instruction {
+            ComputationInstruction::FindStart(case_pos) => {
+                (self.compute_start(case_pos), unfinished)
+            }
+            ComputationInstruction::FindEnd(case_pos) => (self.compute_end(case_pos), unfinished),
+            ComputationInstruction::CrossingAToB(case_pos, from, to) => {
+                (self.compute_crossing(case_pos, from, to, false), unfinished)
+            }
+            ComputationInstruction::CrossingBToA(case_pos, from, to) => {
+                (self.compute_crossing(case_pos, from, to, true), unfinished)
+            }
+            ComputationInstruction::NonCrossingInA(case_pos, pos) => {
+                (self.compute_non_crossing_in_a(case_pos, pos), unfinished)
+            }
+            ComputationInstruction::NonCrossingInB(case_pos, pos) => {
+                (self.compute_non_crossing_in_b(case_pos, pos), unfinished)
+            }
+        }
+    }
+
+    fn compute_non_crossing_in_a(&mut self, case_pos: usize, pos: usize) -> (FheUint8, FheUint8) {
+        let case_name = self.all_case_names.get(case_pos).unwrap();
+
+        let (foreign_activities, foreign_timestamps) =
+            self.foreign_case_to_trace.get(case_name).unwrap();
+        let (_, own_timestamps) = self.own_case_to_trace.get(case_name).unwrap();
+        if own_timestamps.is_empty() {
+            return (
+                foreign_activities.get(pos).unwrap() + 0,
+                foreign_activities.get(pos + 1).unwrap() + 0,
+            );
+        }
+
+        let mut progress: FheBool;
+        let timestamp1 = foreign_timestamps.get(pos).unwrap();
+        let timestamp2 = foreign_timestamps.get(pos + 1).unwrap();
+
+        progress = self.comparison_fn(timestamp2, own_timestamps.first().unwrap());
+        progress
+            .bitor_assign(self.reverse_comparison_fn(own_timestamps.last().unwrap(), timestamp1));
+
+        for j in 0..own_timestamps.len() - 1 {
+            let mut local_progress: FheBool =
+                self.reverse_comparison_fn(own_timestamps.get(j).unwrap(), timestamp1);
+            local_progress
+                .bitand_assign(self.comparison_fn(timestamp2, own_timestamps.get(j + 1).unwrap()));
+
+            progress.bitor_assign(local_progress);
+        }
+
+        (
+            progress.select(
+                foreign_activities.get(pos).unwrap(),
+                self.bottom.as_ref().unwrap(),
+            ),
+            progress.select(
+                foreign_activities.get(pos + 1).unwrap(),
+                self.bottom.as_ref().unwrap(),
+            ),
+        )
+    }
+
+    fn compute_non_crossing_in_b(&mut self, case_pos: usize, pos: usize) -> (FheUint8, FheUint8) {
+        let case_name = self.all_case_names.get(case_pos).unwrap();
+
+        let (_, foreign_timestamps) = self.foreign_case_to_trace.get(case_name).unwrap();
+        let (own_activities, own_timestamps) = self.own_case_to_trace.get(case_name).unwrap();
+        if foreign_timestamps.is_empty() {
+            return (
+                own_activities.get(pos).unwrap() + 0,
+                own_activities.get(pos + 1).unwrap() + 0,
+            );
+        }
+
+        let mut progress: FheBool;
+        let timestamp1 = own_timestamps.get(pos).unwrap();
+        let timestamp2 = own_timestamps.get(pos + 1).unwrap();
+
+        progress = self.reverse_comparison_fn(timestamp2, foreign_timestamps.first().unwrap());
+        progress.bitor_assign(self.comparison_fn(foreign_timestamps.last().unwrap(), timestamp1));
+
+        for j in 0..foreign_timestamps.len() - 1 {
+            let mut local_progress: FheBool =
+                self.comparison_fn(foreign_timestamps.get(j).unwrap(), timestamp1);
+            local_progress.bitand_assign(
+                self.reverse_comparison_fn(timestamp2, foreign_timestamps.get(j + 1).unwrap()),
+            );
+
+            progress.bitor_assign(local_progress);
+        }
+
+        (
+            progress.select(
+                own_activities.get(pos).unwrap(),
+                self.bottom.as_ref().unwrap(),
+            ),
+            progress.select(
+                own_activities.get(pos + 1).unwrap(),
+                self.bottom.as_ref().unwrap(),
+            ),
+        )
+    }
+
+    fn compute_crossing(
+        &mut self,
+        case_pos: usize,
+        pos_a: usize,
+        pos_b: usize,
+        reverse: bool,
+    ) -> (FheUint8, FheUint8) {
+        let case_name = self.all_case_names.get(case_pos).unwrap();
+
+        let (foreign_activities, foreign_timestamps) =
+            self.foreign_case_to_trace.get(case_name).unwrap();
+        let (own_activities, own_timestamps) = self.own_case_to_trace.get(case_name).unwrap();
+        if reverse {
+            let mut cond = self.reverse_comparison_fn(
+                own_timestamps.get(pos_b).unwrap(),
+                foreign_timestamps.get(pos_a).unwrap(),
+            );
+
+            if pos_a > 0 {
+                cond = cond.bitand(self.comparison_fn(
+                    foreign_timestamps.get(pos_a - 1).unwrap(),
+                    own_timestamps.get(pos_b).unwrap(),
+                ));
+            }
+
+            if pos_b + 1 < own_timestamps.len() {
+                cond = cond.bitand(self.comparison_fn(
+                    foreign_timestamps.get(pos_a).unwrap(),
+                    own_timestamps.get(pos_b + 1).unwrap(),
+                ));
+            }
+            (
+                cond.select(&own_activities[pos_b], self.bottom.as_ref().unwrap()),
+                cond.select(&foreign_activities[pos_a], self.bottom.as_ref().unwrap()),
+            )
+        } else {
+            let mut cond = self.comparison_fn(
+                foreign_timestamps.get(pos_a).unwrap(),
+                own_timestamps.get(pos_b).unwrap(),
+            );
+
+            if pos_b > 0 {
+                cond = cond.bitand(self.reverse_comparison_fn(
+                    own_timestamps.get(pos_b - 1).unwrap(),
+                    foreign_timestamps.get(pos_a).unwrap(),
+                ));
+            }
+
+            if pos_a + 1 < foreign_timestamps.len() {
+                cond = cond.bitand(self.reverse_comparison_fn(
+                    own_timestamps.get(pos_b).unwrap(),
+                    foreign_timestamps.get(pos_a + 1).unwrap(),
+                ));
+            }
+            (
+                cond.select(&foreign_activities[pos_a], self.bottom.as_ref().unwrap()),
+                cond.select(&own_activities[pos_b], self.bottom.as_ref().unwrap()),
+            )
+        }
+    }
+
+    fn compute_start(&self, case_pos: usize) -> (FheUint8, FheUint8) {
+        let case_name = self.all_case_names.get(case_pos).unwrap();
+
+        let (foreign_activities, foreign_timestamps) =
+            self.foreign_case_to_trace.get(case_name).unwrap();
+        let (own_activities, own_timestamps) = self.own_case_to_trace.get(case_name).unwrap();
+
+        let successor;
+        if foreign_activities.is_empty() {
+            successor = own_activities.first().unwrap().clone();
+        } else if own_activities.is_empty() {
+            successor = foreign_activities.first().unwrap().clone();
+        } else {
+            successor = self
+                .comparison_fn(
+                    foreign_timestamps.first().unwrap(),
+                    own_timestamps.first().unwrap(),
+                )
+                .select(
+                    foreign_activities.first().unwrap(),
+                    own_activities.first().unwrap(),
+                );
+        }
+
+        (self.start.as_ref().unwrap().clone(), successor)
+    }
+
+    fn compute_end(&self, case_pos: usize) -> (FheUint8, FheUint8) {
+        let case_name = self.all_case_names.get(case_pos).unwrap();
+
+        let (foreign_activities, foreign_timestamps) =
+            self.foreign_case_to_trace.get(case_name).unwrap();
+        let (own_activities, own_timestamps) = self.own_case_to_trace.get(case_name).unwrap();
+
+        let predecessor;
+        if foreign_activities.is_empty() {
+            predecessor = own_activities[own_activities.len() - 1].clone();
+        } else if own_activities.is_empty() {
+            predecessor = foreign_activities[foreign_activities.len() - 1].clone();
+        } else {
+            predecessor = self
+                .comparison_fn(
+                    foreign_timestamps.last().unwrap(),
+                    own_timestamps.last().unwrap(),
+                )
+                .select(
+                    own_activities.last().unwrap(),
+                    foreign_activities.last().unwrap(),
+                );
+        }
+        (predecessor, self.end.as_ref().unwrap().clone())
     }
 
     pub fn set_public_keys(&mut self, public_key: PublicKey, server_key: ServerKey) {
         self.public_key = Some(public_key);
         set_server_key(server_key);
-        self.start = Some(encrypt_activity(1, self.public_key.as_ref().unwrap()));
-        self.end = Some(encrypt_activity(2, self.public_key.as_ref().unwrap()));
     }
 
     pub fn find_activities(&self) -> HashSet<String> {
@@ -320,294 +571,83 @@ impl PublicKeyOrganization {
 
     pub fn set_activity_to_pos(&mut self, activity_to_pos: HashMap<String, usize>) {
         self.activity_to_pos = activity_to_pos;
+        let activities_len = u8::try_from(self.activity_to_pos.len()).unwrap();
+        self.bottom = Some(encrypt_activity(
+            activities_len - 3,
+            self.public_key.as_ref().unwrap(),
+        ));
+        self.start = Some(encrypt_activity(
+            activities_len - 2,
+            self.public_key.as_ref().unwrap(),
+        ));
+        self.end = Some(encrypt_activity(
+            activities_len - 1,
+            self.public_key.as_ref().unwrap(),
+        ));
     }
 
-    fn compare_timestamps(&self, val1: &FheUint32, val2: u32) -> FheBool {
-        val1.le(val2)
+    fn comparison_fn(&self, val1: &FheUint32, val2: &u32) -> FheBool {
+        val1.le(*val2)
     }
 
-    pub fn sanitize_activities(
-        &self,
-        max_activities: u8,
-        enc_activity: &Vec<FheUint8>,
-    ) -> Vec<FheUint8> {
-        let mut result: Vec<FheUint8> = Vec::new();
-
-        enc_activity.iter().for_each(|act| {
-            //let sanitized_act = act.max(max_activities);
-            let sanitized_act = act.ge(max_activities + 3).select(
-                &encrypt_activity(0, self.public_key.as_ref().unwrap()),
-                &act.clone(),
-            );
-            result.push(sanitized_act);
-        });
-
-        result
+    fn reverse_comparison_fn(&self, val1: &u32, val2: &FheUint32) -> FheBool {
+        val2.gt(*val1)
     }
 
-    pub fn find_all_conditions(
+
+    pub fn set_foreign_case_to_trace(
         &mut self,
-        foreign_case_to_trace: HashMap<Attribute, (Vec<FheUint8>, Vec<FheUint32>)>,
-    ) -> Vec<(FheUint8, FheUint8)> {
-        let own_case_to_trace: HashMap<Attribute, (Vec<FheUint8>, Vec<u32>)> =
-            compute_case_to_trace(
-                &self.activity_to_pos,
-                self.public_key.as_ref().unwrap(),
-                &self.event_log,
-            );
+        mut foreign_case_to_trace: HashMap<Attribute, (Vec<FheUint8>, Vec<FheUint32>)>,
+    ) {
+        println!("Sanitize activities from A in B");
+        let max_activities: u8 = u8::try_from(self.activity_to_pos.len() - 3 - 1).unwrap_or(0);
+        tqdm(foreign_case_to_trace.iter_mut()).for_each(|(_, (foreign_activities, _))| {
+            foreign_activities.iter_mut().for_each(|act| {
+                *act = act.max(max_activities);
+            });
+        });
+        
+        self.foreign_case_to_trace = foreign_case_to_trace;
+    }
 
-        let max_activities: u8 = u8::try_from(self.activity_to_pos.len()).unwrap_or(0);
-
-        let mut all_case_names = foreign_case_to_trace
+    pub fn compute_all_case_names(&mut self) {
+        let mut all_case_names = self
+            .own_case_to_trace
             .keys()
             .cloned()
             .collect::<HashSet<Attribute>>();
-        all_case_names.extend(own_case_to_trace.keys().cloned());
+        all_case_names.extend(self.foreign_case_to_trace.keys().cloned());
 
-        let mut size_assumption = 0;
-        let dummy_tuple = (Vec::new(), Vec::new());
-        let dummy_tuple_encrypted = (Vec::new(), Vec::new());
-        all_case_names.iter().for_each(|case_name| {
-            let (own_activities, _) = own_case_to_trace.get(case_name).unwrap_or(&dummy_tuple);
-            let (foreign_activities, _) = foreign_case_to_trace
-                .get(case_name)
-                .unwrap_or(&dummy_tuple_encrypted);
+        self.all_case_names = all_case_names.iter().cloned().collect();
+    }
 
-            size_assumption += (2 * own_activities.len() * foreign_activities.len())
-                + own_activities.len()
-                + foreign_activities.len();
-        });
+    pub fn find_all_instructions(&mut self) {
+        self.own_case_to_trace = compute_case_to_trace(
+            &self.activity_to_pos,
+            self.public_key.as_ref().unwrap(),
+            &self.event_log,
+        );
 
-        let mut result: Vec<(FheUint8, FheUint8)> = Vec::with_capacity(size_assumption);
-
-        println!("Find all conditions");
-        tqdm(all_case_names.into_iter()).for_each(|case_name| {
+        println!("Find all instructions");
+        for (case_pos, case_name) in tqdm(self.all_case_names.iter().enumerate()) {
             let mut foreign_activities;
-            let foreign_timestamps;
-            (foreign_activities, foreign_timestamps) = foreign_case_to_trace
-                .get(&case_name)
-                .unwrap_or(&(Vec::new(), Vec::new()))
-                .to_owned();
-            foreign_activities = self.sanitize_activities(max_activities, &foreign_activities);
-
-            let (own_activities, own_timestamps): (Vec<FheUint8>, Vec<u32>) = own_case_to_trace
-                .get(&case_name)
+            (foreign_activities, _) = self
+                .foreign_case_to_trace
+                .get(case_name)
                 .unwrap_or(&(Vec::new(), Vec::new()))
                 .to_owned();
 
-            self.find_conditions(
-                foreign_activities,
-                foreign_timestamps,
-                own_activities,
-                own_timestamps,
-                &mut result,
-            )
-        });
+            let (own_activities, _): (Vec<FheUint8>, Vec<u32>) = self
+                .own_case_to_trace
+                .get(case_name)
+                .unwrap_or(&(Vec::new(), Vec::new()))
+                .to_owned();
 
-        result.shuffle(&mut rng());
-        result
-    }
-
-    fn find_conditions(
-        &self,
-        foreign_activities: Vec<FheUint8>,
-        foreign_timestamps: Vec<FheUint32>,
-        own_activities: Vec<FheUint8>,
-        own_timestamps: Vec<u32>,
-        result: &mut Vec<(FheUint8, FheUint8)>,
-    ) {
-        if own_activities.is_empty() {
-            self.add_full_trace(&foreign_activities, result);
-            return;
-        } else if foreign_activities.is_empty() {
-            self.add_full_trace(&own_activities, result);
-            return;
-        }
-
-        let mut comparison_foreign_to_own: HashMap<(usize, usize), FheBool> = HashMap::new();
-        let mut comparison_own_to_foreign: HashMap<(usize, usize), FheBool> = HashMap::new();
-        for (i, foreign_timestamp) in foreign_timestamps.iter().enumerate() {
-            for (j, &own_timestamp) in own_timestamps.iter().enumerate() {
-                let foreign_less_equal_own =
-                    self.compare_timestamps(foreign_timestamp, own_timestamp);
-                let own_less_foreign = foreign_less_equal_own.clone().not();
-                comparison_foreign_to_own.insert((i, j), foreign_less_equal_own);
-                comparison_own_to_foreign.insert((j, i), own_less_foreign);
-            }
-        }
-
-        // Find start
-        result.push((
-            self.start.as_ref().unwrap().clone(),
-            comparison_foreign_to_own
-                .get(&(0, 0))
-                .unwrap_or(&encrypt_fhe_boolean(
-                    !foreign_activities.is_empty(),
-                    self.public_key.as_ref().unwrap(),
-                ))
-                .select(&foreign_activities[0], &own_activities[0]),
-        ));
-
-        // Find end
-        result.push((
-            comparison_foreign_to_own
-                .get(&(
-                    foreign_activities.len().checked_sub(1).unwrap_or(0),
-                    own_activities.len().checked_sub(1).unwrap_or(0),
-                ))
-                .unwrap_or(&encrypt_fhe_boolean(
-                    !own_activities.is_empty(),
-                    self.public_key.as_ref().unwrap(),
-                ))
-                .select(
-                    &own_activities[own_activities.len() - 1],
-                    &foreign_activities[foreign_activities.len() - 1],
-                ),
-            self.end.as_ref().unwrap().clone(),
-        ));
-
-        self.find_progress_pairs_non_crossing(
-            &own_activities,
-            foreign_activities.len(),
-            &comparison_own_to_foreign,
-            &comparison_foreign_to_own,
-            result,
-        );
-
-        self.find_progress_pairs_non_crossing(
-            &foreign_activities,
-            own_activities.len(),
-            &comparison_foreign_to_own,
-            &comparison_own_to_foreign,
-            result,
-        );
-
-        self.find_progress_pairs_crossing(
-            &foreign_activities,
-            &own_activities,
-            &comparison_foreign_to_own,
-            &comparison_own_to_foreign,
-            result,
-        );
-
-        self.find_progress_pairs_crossing(
-            &own_activities,
-            &foreign_activities,
-            &comparison_own_to_foreign,
-            &comparison_foreign_to_own,
-            result,
-        );
-    }
-    fn add_full_trace(&self, activities: &Vec<FheUint8>, result: &mut Vec<(FheUint8, FheUint8)>) {
-        if !activities.is_empty() {
-            result.push((self.start.as_ref().unwrap().clone(), activities[0].clone()));
-            result.push((
-                activities[activities.len() - 1].clone(),
-                self.end.as_ref().unwrap().clone(),
+            self.instructions.extend(find_instructions(
+                case_pos,
+                foreign_activities.len(),
+                own_activities.len(),
             ));
         }
-
-        for i in 0..activities.len() - 1 {
-            result.push((
-                activities.get(i).unwrap() + 0,
-                activities.get(i + 1).unwrap() + 0,
-            ));
-        }
-    }
-
-    fn find_progress_pairs_crossing(
-        &self,
-        activity_list_from: &Vec<FheUint8>,
-        activity_list_to: &Vec<FheUint8>,
-        comparison_map: &HashMap<(usize, usize), FheBool>,
-        reverse_comparison_map: &HashMap<(usize, usize), FheBool>,
-        result: &mut Vec<(FheUint8, FheUint8)>,
-    ) {
-        for i in 0..activity_list_from.len() {
-            for j in 0..activity_list_to.len() {
-                let bottom: FheUint8 = encrypt_activity(0, self.public_key.as_ref().unwrap());
-
-                let mut cond = comparison_map.get(&(i, j)).unwrap().clone();
-                if j > 0 {
-                    cond = cond.bitand(reverse_comparison_map.get(&(j - 1, i)).unwrap());
-                }
-                if i + 1 < activity_list_from.len() {
-                    cond = cond.bitand(reverse_comparison_map.get(&(j, i + 1)).unwrap());
-                }
-
-                result.push((
-                    cond.select(&activity_list_from[i], &bottom),
-                    cond.select(&activity_list_to[j], &bottom),
-                ));
-            }
-        }
-    }
-
-    fn find_progress_pairs_non_crossing(
-        &self,
-        activities: &Vec<FheUint8>,
-        len_other_activities: usize,
-        comparison_map: &HashMap<(usize, usize), FheBool>,
-        reverse_comparison_map: &HashMap<(usize, usize), FheBool>,
-        result: &mut Vec<(FheUint8, FheUint8)>,
-    ) {
-        if activities.is_empty() {
-            return;
-        }
-
-        for i in 0..activities.len() - 1 {
-            let bottom: FheUint8 = encrypt_activity(0, self.public_key.as_ref().unwrap());
-
-            let mut progress: FheBool;
-            if len_other_activities > 0 {
-                progress = comparison_map
-                    .get(&(i + 1, 0))
-                    .unwrap_or(&encrypt_fhe_boolean(
-                        false,
-                        self.public_key.as_ref().unwrap(),
-                    ))
-                    .clone();
-                progress = progress.bitor(
-                    reverse_comparison_map
-                        .get(&(len_other_activities - 1, i))
-                        .unwrap(),
-                );
-
-                for j in 0..len_other_activities - 1 {
-                    let local_progress: FheBool =
-                        reverse_comparison_map.get(&(j, i)).unwrap().clone()
-                            & comparison_map
-                                .get(&(i + 1, j + 1))
-                                .unwrap_or(&encrypt_fhe_boolean(
-                                    true,
-                                    &self.public_key.as_ref().unwrap(),
-                                ))
-                                .clone();
-                    progress |= local_progress;
-                }
-            } else {
-                progress = encrypt_fhe_boolean(true, self.public_key.as_ref().unwrap());
-            }
-
-            result.push((
-                progress.select(&activities[i], &bottom),
-                progress.select(&activities[i + 1], &bottom),
-            ));
-        }
-    }
-
-    fn compute_permutations(list: Vec<FheBool>) -> (HashMap<usize, usize>, Vec<FheBool>) {
-        let mut mapping: HashMap<usize, usize> = HashMap::new();
-        let mut shuffled_list: Vec<FheBool> = Vec::with_capacity(list.len());
-
-        let mut permutation: Vec<usize> = (0..list.len()).collect();
-        permutation.shuffle(&mut rng());
-
-        permutation.iter().enumerate().for_each(|(index, pos)| {
-            mapping.insert(index, *pos);
-            shuffled_list.push(list[*pos].clone());
-        });
-
-        (mapping, shuffled_list)
     }
 }
