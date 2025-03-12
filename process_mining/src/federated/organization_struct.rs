@@ -2,18 +2,22 @@ use crate::dfg::DirectlyFollowsGraph;
 use crate::event_log::event_log_struct::EventLogClassifier;
 use crate::event_log::{Attribute, Event, Trace, XESEditableAttribute};
 use crate::EventLog;
+use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
 use petgraph::matrix_graph::Nullable;
 use primes::PrimeSet;
 use rand::rng;
 use rand::seq::SliceRandom;
 use rayon::prelude::*;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
 use std::ops::{BitAnd, BitAndAssign, BitOrAssign};
 use tfhe::prelude::*;
-use tfhe::{generate_keys, set_server_key, ClientKey, Config, ConfigBuilder, FheBool, FheUint, FheUint32, FheUint8, FheUint8Id, PublicKey, ServerKey};
-use tqdm::tqdm;
+use tfhe::{
+    generate_keys, set_server_key, ClientKey, Config, ConfigBuilder, FheBool, FheUint32,
+    FheUint8, PublicKey, ServerKey,
+};
 
 pub fn find_activities(event_log: &EventLog) -> HashSet<String> {
     let mut result = HashSet::new();
@@ -92,18 +96,23 @@ pub fn compute_case_to_trace_private(
     activity_to_pos: &HashMap<String, usize>,
     private_key: &ClientKey,
     event_log: &EventLog,
-) -> HashMap<Attribute, (Vec<FheUint8>, Vec<FheUint32>)> {
-    let mut result: HashMap<Attribute, (Vec<FheUint8>, Vec<FheUint32>)> = HashMap::new();
-
+) -> HashMap<String, (Vec<FheUint8>, Vec<FheUint32>)> {
     let name_to_trace: HashMap<&Attribute, &Trace> = event_log.find_name_trace_dictionary();
 
+    let bar = ProgressBar::new(name_to_trace.len() as u64 as u64);
+    bar.set_style(ProgressStyle::with_template("[{elapsed_precise}/{eta_precise}] {wide_bar} {pos}/{len}")
+        .unwrap());
     println!("Encrypt data organization A");
-    tqdm(name_to_trace).into_iter().for_each(|(name, trace)| {
-        result.insert(
-            name.clone(),
-            preprocess_trace_private(activity_to_pos, private_key, trace),
-        );
-    });
+    let result: HashMap<String, (Vec<FheUint8>, Vec<FheUint32>)> = name_to_trace
+        .par_iter()
+        .progress_with(bar)
+        .map(|(name, trace)| {
+            (
+                name.value.try_as_string().unwrap().clone(),
+                preprocess_trace_private(activity_to_pos, private_key, trace),
+            )
+        })
+        .collect();
 
     result
 }
@@ -133,33 +142,37 @@ pub fn compute_case_to_trace(
     activity_to_pos: &HashMap<String, usize>,
     public_key: &PublicKey,
     event_log: &EventLog,
-) -> HashMap<Attribute, (Vec<FheUint8>, Vec<u32>)> {
-    let mut result: HashMap<Attribute, (Vec<FheUint8>, Vec<u32>)> = HashMap::new();
-
+) -> HashMap<String, (Vec<FheUint8>, Vec<u32>)> {
     let name_to_trace: HashMap<&Attribute, &Trace> = event_log.find_name_trace_dictionary();
 
+    let bar = ProgressBar::new(name_to_trace.len() as u64);
+    bar.set_style(ProgressStyle::with_template("[{elapsed_precise}/{eta_precise}] {wide_bar} {pos}/{len}")
+        .unwrap());
     println!("Encrypt data organization B");
-    tqdm(name_to_trace).into_iter().for_each(|(name, trace)| {
-        result.insert(
-            name.clone(),
-            preprocess_trace(activity_to_pos, public_key, trace),
-        );
-    });
+    let result: HashMap<String, (Vec<FheUint8>, Vec<u32>)> = name_to_trace
+        .par_iter()
+        .progress_with(bar)
+        .map(|(&name, &trace)| {
+            (
+                name.value.try_as_string().unwrap().clone(),
+                preprocess_trace(activity_to_pos, public_key, trace),
+            )
+        })
+        .collect();
 
     result
 }
 
-pub struct PrivateKeyOrganization<'a> {
+pub struct PrivateKeyOrganization {
     private_key: ClientKey,
     server_key: ServerKey,
     public_key: PublicKey,
     event_log: EventLog,
     activity_to_pos: HashMap<String, usize>,
     pos_to_activity: HashMap<usize, String>,
-    dfg: DirectlyFollowsGraph<'a>,
 }
 
-impl<'a> PrivateKeyOrganization<'a> {
+impl PrivateKeyOrganization {
     pub fn new(event_log: EventLog) -> Self {
         let config: Config = ConfigBuilder::default().build();
         let (private_key, server_key): (ClientKey, ServerKey) = generate_keys(config);
@@ -171,17 +184,24 @@ impl<'a> PrivateKeyOrganization<'a> {
             event_log,
             activity_to_pos: HashMap::new(),
             pos_to_activity: HashMap::new(),
-            dfg: DirectlyFollowsGraph::default(),
         }
     }
 
-    pub fn get_dfg(&self) -> &DirectlyFollowsGraph<'a> {
-        &self.dfg
-    }
+    pub fn edges_to_dfg(&self, edges: Vec<(String, String)>) -> DirectlyFollowsGraph<'_> {
+        let mut result = DirectlyFollowsGraph::default();
+        self.activity_to_pos.keys().for_each(|act| {
+            if !act.eq("bottom") {
+                result.add_activity(act.clone(), 0);
+            }
+        });
 
-    pub fn recalculate_activity_counts(&mut self) -> &DirectlyFollowsGraph<'a> {
-        self.dfg.recalculate_activity_counts();
-        &self.dfg
+        edges.into_iter().for_each(|(from, to)| {
+            result.add_df_relation(Cow::from(from), Cow::from(to), 1);
+        });
+
+        result.recalculate_activity_counts();
+
+        result
     }
 
     fn decrypt_activity(&self, val: FheUint8) -> u8 {
@@ -192,7 +212,7 @@ impl<'a> PrivateKeyOrganization<'a> {
         val.decrypt(&self.private_key)
     }
 
-    pub fn encrypt_all_data(&self) -> HashMap<Attribute, (Vec<FheUint8>, Vec<FheUint32>)> {
+    pub fn encrypt_all_data(&self) -> HashMap<String, (Vec<FheUint8>, Vec<FheUint32>)> {
         compute_case_to_trace_private(&self.activity_to_pos, &self.private_key, &self.event_log)
     }
 
@@ -208,46 +228,39 @@ impl<'a> PrivateKeyOrganization<'a> {
         activities.extend(foreign_activities);
         let activities_len = activities.len();
 
-        self.activity_to_pos.insert("bottom".to_string(), activities_len);
-        self.activity_to_pos.insert("start".to_string(), activities_len+1);
-        self.activity_to_pos.insert("end".to_string(), activities_len+2);
+        self.activity_to_pos
+            .insert("bottom".to_string(), activities_len);
+        self.activity_to_pos
+            .insert("start".to_string(), activities_len + 1);
+        self.activity_to_pos
+            .insert("end".to_string(), activities_len + 2);
 
         activities.iter().enumerate().for_each(|(pos, act)| {
             self.activity_to_pos.insert(act.clone(), pos);
-        });
-
-        self.activity_to_pos.keys().for_each(|act| {
-            if !act.eq("bottom") {
-                self.dfg.add_activity(act.clone(), 0);
-            }
         });
 
         self.activity_to_pos.iter().for_each(|(act, pos)| {
             self.pos_to_activity.insert(*pos, act.clone());
         });
 
-        self.activity_to_pos.keys().for_each(|act| {
-            if !act.eq("bottom") {
-                self.dfg.add_activity(act.clone(), 0);
-            }
-        });
-
         self.activity_to_pos.clone()
     }
 
-    pub fn evaluate_secret_to_dfg(&mut self, secret_edge: (FheUint8, FheUint8)) {
+    pub fn evaluate_secret_to_dfg(
+        &self,
+        secret_edge: (FheUint8, FheUint8),
+    ) -> Option<(String, String)> {
         let (from, to) = secret_edge;
         let from_pos = self.decrypt_activity(from);
         if from_pos == 0 {
-            return;
+            return None;
         }
 
         let to_pos = self.decrypt_activity(to);
         if to_pos == 0 {
-            return;
+            return None;
         }
-
-        self.dfg.add_df_relation(
+        Some((
             self.pos_to_activity
                 .get(&(from_pos as usize))
                 .unwrap()
@@ -258,15 +271,14 @@ impl<'a> PrivateKeyOrganization<'a> {
                 .unwrap()
                 .clone()
                 .into(),
-            1,
-        );
+        ))
     }
 }
 
 ///
 /// Enum declaring the different messages and data that `Organization`s can send to each other.
 ///
-#[derive(Clone, Serialize, Debug)]
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
 pub enum ComputationInstruction {
     FindStart(usize),
     FindEnd(usize),
@@ -311,13 +323,13 @@ pub struct PublicKeyOrganization {
     public_key: Option<PublicKey>,
     event_log: EventLog,
     activity_to_pos: HashMap<String, usize>,
-    own_case_to_trace: HashMap<Attribute, (Vec<FheUint8>, Vec<u32>)>,
-    foreign_case_to_trace: HashMap<Attribute, (Vec<FheUint8>, Vec<FheUint32>)>,
+    own_case_to_trace: HashMap<String, (Vec<FheUint8>, Vec<u32>)>,
+    foreign_case_to_trace: HashMap<String, (Vec<FheUint8>, Vec<FheUint32>)>,
     bottom: Option<FheUint8>,
     start: Option<FheUint8>,
     end: Option<FheUint8>,
     pub instructions: Vec<ComputationInstruction>,
-    all_case_names: Vec<Attribute>,
+    all_case_names: Vec<String>,
 }
 
 impl PublicKeyOrganization {
@@ -340,8 +352,8 @@ impl PublicKeyOrganization {
         self.instructions.len()
     }
 
-    pub fn compute_next_instruction(&mut self) -> ((FheUint8, FheUint8), bool) {
-        let instruction = self.instructions.pop().unwrap();
+    pub fn compute_next_instruction(&self, pos: usize) -> ((FheUint8, FheUint8), bool) {
+        let instruction = self.instructions[pos].clone();
         let unfinished = !self.instructions.is_empty();
         match instruction {
             ComputationInstruction::FindStart(case_pos) => {
@@ -363,7 +375,7 @@ impl PublicKeyOrganization {
         }
     }
 
-    fn compute_non_crossing_in_a(&mut self, case_pos: usize, pos: usize) -> (FheUint8, FheUint8) {
+    fn compute_non_crossing_in_a(&self, case_pos: usize, pos: usize) -> (FheUint8, FheUint8) {
         let case_name = self.all_case_names.get(case_pos).unwrap();
 
         let (foreign_activities, foreign_timestamps) =
@@ -405,7 +417,7 @@ impl PublicKeyOrganization {
         )
     }
 
-    fn compute_non_crossing_in_b(&mut self, case_pos: usize, pos: usize) -> (FheUint8, FheUint8) {
+    fn compute_non_crossing_in_b(&self, case_pos: usize, pos: usize) -> (FheUint8, FheUint8) {
         let case_name = self.all_case_names.get(case_pos).unwrap();
 
         let (_, foreign_timestamps) = self.foreign_case_to_trace.get(case_name).unwrap();
@@ -447,7 +459,7 @@ impl PublicKeyOrganization {
     }
 
     fn compute_crossing(
-        &mut self,
+        &self,
         case_pos: usize,
         pos_a: usize,
         pos_b: usize,
@@ -562,7 +574,7 @@ impl PublicKeyOrganization {
 
     pub fn set_public_keys(&mut self, public_key: PublicKey, server_key: ServerKey) {
         self.public_key = Some(public_key);
-        set_server_key(server_key);
+        rayon::broadcast(|_| set_server_key(server_key.clone()));
     }
 
     pub fn find_activities(&self) -> HashSet<String> {
@@ -594,19 +606,26 @@ impl PublicKeyOrganization {
         val2.gt(*val1)
     }
 
-
     pub fn set_foreign_case_to_trace(
         &mut self,
-        mut foreign_case_to_trace: HashMap<Attribute, (Vec<FheUint8>, Vec<FheUint32>)>,
+        mut foreign_case_to_trace: HashMap<String, (Vec<FheUint8>, Vec<FheUint32>)>,
     ) {
         println!("Sanitize activities from A in B");
         let max_activities: u8 = u8::try_from(self.activity_to_pos.len() - 3 - 1).unwrap_or(0);
-        tqdm(foreign_case_to_trace.iter_mut()).for_each(|(_, (foreign_activities, _))| {
-            foreign_activities.iter_mut().for_each(|act| {
-                *act = act.max(max_activities);
-            });
-        });
+        let len = foreign_case_to_trace.len() as u64;
+        let bar = ProgressBar::new(len);
+        bar.set_style(ProgressStyle::with_template("[{elapsed_precise}/{eta_precise}] {wide_bar} {pos}/{len}")
+            .unwrap());
         
+        foreign_case_to_trace
+            .par_iter_mut()
+            .progress_with(bar)
+            .for_each(|(_, (foreign_activities, _))| {
+                foreign_activities.iter_mut().for_each(|act| {
+                    *act = act.max(max_activities);
+                });
+            });
+
         self.foreign_case_to_trace = foreign_case_to_trace;
     }
 
@@ -615,7 +634,7 @@ impl PublicKeyOrganization {
             .own_case_to_trace
             .keys()
             .cloned()
-            .collect::<HashSet<Attribute>>();
+            .collect::<HashSet<String>>();
         all_case_names.extend(self.foreign_case_to_trace.keys().cloned());
 
         self.all_case_names = all_case_names.iter().cloned().collect();
@@ -628,26 +647,32 @@ impl PublicKeyOrganization {
             &self.event_log,
         );
 
+        let bar = ProgressBar::new(self.all_case_names.len() as u64);
+        bar.set_style(ProgressStyle::with_template("[{elapsed_precise}/{eta_precise}] {wide_bar} {pos}/{len}")
+            .unwrap());
         println!("Find all instructions");
-        for (case_pos, case_name) in tqdm(self.all_case_names.iter().enumerate()) {
-            let mut foreign_activities;
-            (foreign_activities, _) = self
-                .foreign_case_to_trace
-                .get(case_name)
-                .unwrap_or(&(Vec::new(), Vec::new()))
-                .to_owned();
+        self.instructions = self.all_case_names
+            .par_iter()
+            .progress_with(bar)
+            .enumerate()
+            .flat_map(|(case_pos, case_name)| {
+                let (foreign_activities, _) = self
+                    .foreign_case_to_trace
+                    .get(case_name)
+                    .unwrap_or(&(Vec::new(), Vec::new()))
+                    .to_owned();
 
-            let (own_activities, _): (Vec<FheUint8>, Vec<u32>) = self
-                .own_case_to_trace
-                .get(case_name)
-                .unwrap_or(&(Vec::new(), Vec::new()))
-                .to_owned();
+                let (own_activities, _): (Vec<FheUint8>, Vec<u32>) = self
+                    .own_case_to_trace
+                    .get(case_name)
+                    .unwrap_or(&(Vec::new(), Vec::new()))
+                    .to_owned();
 
-            self.instructions.extend(find_instructions(
-                case_pos,
-                foreign_activities.len(),
-                own_activities.len(),
-            ));
-        }
+                find_instructions(
+                    case_pos,
+                    foreign_activities.len(),
+                    own_activities.len(),
+                )
+            }).collect();
     }
 }

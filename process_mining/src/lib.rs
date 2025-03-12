@@ -55,7 +55,6 @@ pub mod event_log {
 pub mod federated {
     pub mod organization_communication;
     pub mod organization_struct;
-    pub mod organization_struct_rayon;
 }
 
 /// Util module with smaller helper functions, structs or enums
