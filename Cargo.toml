@@ -12,3 +12,11 @@ members = [
 
 [profile.release.package.pm_wasm]
 debug = true
+
+[profile.release]
+debug = false
+strip = true
+panic = 'abort'
+opt-level = 3
+lto = true
+codegen-units = 1
