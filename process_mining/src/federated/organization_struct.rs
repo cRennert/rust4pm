@@ -14,7 +14,10 @@ use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
 use std::ops::{BitAnd, BitAndAssign, BitOrAssign};
 use tfhe::prelude::*;
-use tfhe::{generate_keys, set_server_key, ClientKey, CompressedServerKey, Config, ConfigBuilder, FheBool, FheUint32, FheUint8, PublicKey, ServerKey};
+use tfhe::{
+    generate_keys, set_server_key, ClientKey, Config, ConfigBuilder, FheBool, FheUint16, FheUint32,
+    PublicKey, ServerKey,
+};
 
 pub fn find_activities(event_log: &EventLog) -> HashSet<String> {
     let mut result = HashSet::new();
@@ -43,9 +46,9 @@ pub fn encrypt_value_private(value: u32, private_key: &ClientKey) -> FheUint32 {
     // FheUint32::encrypt_trivial(value)
 }
 
-pub fn encrypt_activity_private(value: u16, private_key: &ClientKey) -> FheUint8 {
-    FheUint8::encrypt(value, private_key)
-    // FheUint8::encrypt_trivial(value)
+pub fn encrypt_activity_private(value: u16, private_key: &ClientKey) -> FheUint16 {
+    FheUint16::encrypt(value, private_key)
+    // FheUint16::encrypt_trivial(value)
 }
 
 pub fn encrypt_fhe_boolean_private(bool: bool, private_key: &ClientKey) -> FheBool {
@@ -58,9 +61,9 @@ pub fn encrypt_value(value: u32, public_key: &PublicKey) -> FheUint32 {
     // FheUint32::encrypt_trivial(value)
 }
 
-pub fn encrypt_activity(value: u16, public_key: &PublicKey) -> FheUint8 {
-    FheUint8::encrypt(value, public_key)
-    // FheUint8::encrypt_trivial(value)
+pub fn encrypt_activity(value: u16, public_key: &PublicKey) -> FheUint16 {
+    FheUint16::encrypt(value, public_key)
+    // FheUint16::encrypt_trivial(value)
 }
 
 pub fn encrypt_fhe_boolean(bool: bool, public_key: &PublicKey) -> FheBool {
@@ -72,8 +75,8 @@ pub fn preprocess_trace_private(
     activity_to_pos: &HashMap<String, usize>,
     private_key: &ClientKey,
     trace: &Trace,
-) -> (Vec<FheUint8>, Vec<FheUint32>) {
-    let mut activities: Vec<FheUint8> = Vec::with_capacity(trace.events.len());
+) -> (Vec<FheUint16>, Vec<FheUint32>) {
+    let mut activities: Vec<FheUint16> = Vec::with_capacity(trace.events.len());
     let mut timestamps: Vec<FheUint32> = Vec::with_capacity(trace.events.len());
 
     let classifier = EventLogClassifier::default();
@@ -93,7 +96,7 @@ pub fn compute_case_to_trace_private(
     activity_to_pos: &HashMap<String, usize>,
     private_key: &ClientKey,
     event_log: &EventLog,
-) -> HashMap<String, (Vec<FheUint8>, Vec<FheUint32>)> {
+) -> HashMap<String, (Vec<FheUint16>, Vec<FheUint32>)> {
     let name_to_trace: HashMap<&Attribute, &Trace> = event_log.find_name_trace_dictionary();
 
     let bar = ProgressBar::new(name_to_trace.len() as u64 as u64);
@@ -102,7 +105,7 @@ pub fn compute_case_to_trace_private(
             .unwrap(),
     );
     println!("Encrypt data organization A");
-    let result: HashMap<String, (Vec<FheUint8>, Vec<FheUint32>)> = name_to_trace
+    let result: HashMap<String, (Vec<FheUint16>, Vec<FheUint32>)> = name_to_trace
         .par_iter()
         .progress_with(bar)
         .with_finish(ProgressFinish::AndLeave)
@@ -121,8 +124,8 @@ pub fn preprocess_trace(
     activity_to_pos: &HashMap<String, usize>,
     public_key: &PublicKey,
     trace: &Trace,
-) -> (Vec<FheUint8>, Vec<u32>) {
-    let mut activities: Vec<FheUint8> = Vec::with_capacity(trace.events.len());
+) -> (Vec<FheUint16>, Vec<u32>) {
+    let mut activities: Vec<FheUint16> = Vec::with_capacity(trace.events.len());
     let mut timestamps: Vec<u32> = Vec::with_capacity(trace.events.len());
 
     let classifier = EventLogClassifier::default();
@@ -142,7 +145,7 @@ pub fn compute_case_to_trace(
     activity_to_pos: &HashMap<String, usize>,
     public_key: &PublicKey,
     event_log: &EventLog,
-) -> HashMap<String, (Vec<FheUint8>, Vec<u32>)> {
+) -> HashMap<String, (Vec<FheUint16>, Vec<u32>)> {
     let name_to_trace: HashMap<&Attribute, &Trace> = event_log.find_name_trace_dictionary();
 
     let bar = ProgressBar::new(name_to_trace.len() as u64);
@@ -151,7 +154,7 @@ pub fn compute_case_to_trace(
             .unwrap(),
     );
     println!("Encrypt data organization B");
-    let result: HashMap<String, (Vec<FheUint8>, Vec<u32>)> = name_to_trace
+    let result: HashMap<String, (Vec<FheUint16>, Vec<u32>)> = name_to_trace
         .par_iter()
         .progress_with(bar)
         .map(|(&name, &trace)| {
@@ -206,7 +209,7 @@ impl PrivateKeyOrganization {
         result
     }
 
-    fn decrypt_activity(&self, val: FheUint8) -> u16 {
+    fn decrypt_activity(&self, val: FheUint16) -> u16 {
         val.decrypt(&self.private_key)
     }
 
@@ -214,12 +217,12 @@ impl PrivateKeyOrganization {
         val.decrypt(&self.private_key)
     }
 
-    pub fn encrypt_all_data(&self) -> HashMap<String, (Vec<FheUint8>, Vec<FheUint32>)> {
+    pub fn encrypt_all_data(&self) -> HashMap<String, (Vec<FheUint16>, Vec<FheUint32>)> {
         compute_case_to_trace_private(&self.activity_to_pos, &self.private_key, &self.event_log)
     }
 
-    pub fn get_public_keys(&self) -> (CompressedServerKey, PublicKey) {
-        (CompressedServerKey::new(&self.private_key), self.public_key.clone())
+    pub fn get_public_keys(&self) -> (ServerKey, PublicKey) {
+        (self.server_key.clone(), self.public_key.clone())
     }
 
     pub fn update_with_foreign_activities(
@@ -250,7 +253,7 @@ impl PrivateKeyOrganization {
 
     pub fn evaluate_secret_to_dfg(
         &self,
-        secret_edge: (FheUint8, FheUint8),
+        secret_edge: (FheUint16, FheUint16),
     ) -> Option<(String, String)> {
         let (from, to) = secret_edge;
         let from_pos = self.decrypt_activity(from);
@@ -325,11 +328,11 @@ pub struct PublicKeyOrganization {
     public_key: Option<PublicKey>,
     event_log: EventLog,
     activity_to_pos: HashMap<String, usize>,
-    own_case_to_trace: HashMap<String, (Vec<FheUint8>, Vec<u32>)>,
-    foreign_case_to_trace: HashMap<String, (Vec<FheUint8>, Vec<FheUint32>)>,
-    bottom: Option<FheUint8>,
-    start: Option<FheUint8>,
-    end: Option<FheUint8>,
+    own_case_to_trace: HashMap<String, (Vec<FheUint16>, Vec<u32>)>,
+    foreign_case_to_trace: HashMap<String, (Vec<FheUint16>, Vec<FheUint32>)>,
+    bottom: Option<FheUint16>,
+    start: Option<FheUint16>,
+    end: Option<FheUint16>,
     pub instructions: Vec<ComputationInstruction>,
     all_case_names: Vec<String>,
 }
@@ -354,7 +357,7 @@ impl PublicKeyOrganization {
         self.instructions.len()
     }
 
-    pub fn compute_next_instruction(&self, pos: usize) -> ((FheUint8, FheUint8), bool) {
+    pub fn compute_next_instruction(&self, pos: usize) -> ((FheUint16, FheUint16), bool) {
         let instruction = self.instructions[pos].clone();
         let unfinished = !self.instructions.is_empty();
         match instruction {
@@ -377,7 +380,7 @@ impl PublicKeyOrganization {
         }
     }
 
-    fn compute_non_crossing_in_a(&self, case_pos: usize, pos: usize) -> (FheUint8, FheUint8) {
+    fn compute_non_crossing_in_a(&self, case_pos: usize, pos: usize) -> (FheUint16, FheUint16) {
         let case_name = self.all_case_names.get(case_pos).unwrap();
 
         let (foreign_activities, foreign_timestamps) =
@@ -419,7 +422,7 @@ impl PublicKeyOrganization {
         )
     }
 
-    fn compute_non_crossing_in_b(&self, case_pos: usize, pos: usize) -> (FheUint8, FheUint8) {
+    fn compute_non_crossing_in_b(&self, case_pos: usize, pos: usize) -> (FheUint16, FheUint16) {
         let case_name = self.all_case_names.get(case_pos).unwrap();
 
         let (_, foreign_timestamps) = self.foreign_case_to_trace.get(case_name).unwrap();
@@ -466,7 +469,7 @@ impl PublicKeyOrganization {
         pos_a: usize,
         pos_b: usize,
         reverse: bool,
-    ) -> (FheUint8, FheUint8) {
+    ) -> (FheUint16, FheUint16) {
         let case_name = self.all_case_names.get(case_pos).unwrap();
 
         let (foreign_activities, foreign_timestamps) =
@@ -521,7 +524,7 @@ impl PublicKeyOrganization {
         }
     }
 
-    fn compute_start(&self, case_pos: usize) -> (FheUint8, FheUint8) {
+    fn compute_start(&self, case_pos: usize) -> (FheUint16, FheUint16) {
         let case_name = self.all_case_names.get(case_pos).unwrap();
 
         let (foreign_activities, foreign_timestamps) =
@@ -548,7 +551,7 @@ impl PublicKeyOrganization {
         (self.start.as_ref().unwrap().clone(), successor)
     }
 
-    fn compute_end(&self, case_pos: usize) -> (FheUint8, FheUint8) {
+    fn compute_end(&self, case_pos: usize) -> (FheUint16, FheUint16) {
         let case_name = self.all_case_names.get(case_pos).unwrap();
 
         let (foreign_activities, foreign_timestamps) =
@@ -574,10 +577,9 @@ impl PublicKeyOrganization {
         (predecessor, self.end.as_ref().unwrap().clone())
     }
 
-    pub fn set_public_keys(&mut self, public_key: PublicKey, server_key: CompressedServerKey) {
+    pub fn set_public_keys(&mut self, public_key: PublicKey, server_key: ServerKey) {
         self.public_key = Some(public_key);
-        let gpu_key = server_key.decompress_to_gpu();
-        rayon::broadcast(|_| set_server_key(gpu_key));
+        rayon::broadcast(|_| set_server_key(server_key.clone()));
     }
 
     pub fn find_activities(&self) -> HashSet<String> {
@@ -611,7 +613,7 @@ impl PublicKeyOrganization {
 
     pub fn set_foreign_case_to_trace(
         &mut self,
-        mut foreign_case_to_trace: HashMap<String, (Vec<FheUint8>, Vec<FheUint32>)>,
+        mut foreign_case_to_trace: HashMap<String, (Vec<FheUint16>, Vec<FheUint32>)>,
     ) {
         println!("Sanitize activities from A in B");
         let max_activities: u16 = u16::try_from(self.activity_to_pos.len() - 3 - 1).unwrap_or(0);
@@ -676,7 +678,7 @@ impl PublicKeyOrganization {
                     .unwrap_or(&(Vec::new(), Vec::new()))
                     .to_owned();
 
-                let (own_activities, _): (Vec<FheUint8>, Vec<u32>) = self
+                let (own_activities, _): (Vec<FheUint16>, Vec<u32>) = self
                     .own_case_to_trace
                     .get(case_name)
                     .unwrap_or(&(Vec::new(), Vec::new()))

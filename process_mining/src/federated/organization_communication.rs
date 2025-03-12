@@ -1,14 +1,10 @@
 use crate::dfg::DirectlyFollowsGraph;
-use crate::event_log::Attribute;
-use crate::federated::organization_struct::{
-    ComputationInstruction, PrivateKeyOrganization, PublicKeyOrganization,
-};
+use crate::federated::organization_struct::{PrivateKeyOrganization, PublicKeyOrganization};
 use indicatif::ParallelProgressIterator;
-use indicatif::ProgressIterator;
 use rayon::iter::ParallelIterator;
 use rayon::prelude::IntoParallelIterator;
-use std::collections::{HashMap, LinkedList};
-use tfhe::{FheUint32, FheUint8};
+use std::collections::HashMap;
+use tfhe::{FheUint16, FheUint32};
 
 pub fn communicate<'a>(
     org_a: &'a mut PrivateKeyOrganization,
@@ -23,7 +19,7 @@ pub fn communicate<'a>(
     let agreed_activity_to_pos = org_a.update_with_foreign_activities(activities_b);
     org_b.set_activity_to_pos(agreed_activity_to_pos);
 
-    let org_a_encrypted_data: HashMap<String, (Vec<FheUint8>, Vec<FheUint32>)> =
+    let org_a_encrypted_data: HashMap<String, (Vec<FheUint16>, Vec<FheUint32>)> =
         org_a.encrypt_all_data();
     org_b.set_foreign_case_to_trace(org_a_encrypted_data);
     org_b.compute_all_case_names();
@@ -42,7 +38,7 @@ pub fn communicate<'a>(
             }
         })
         .collect();
-    
+
     org_a.edges_to_dfg(edges)
 
     // println!("{}", org_b.instructions.clone().len());
