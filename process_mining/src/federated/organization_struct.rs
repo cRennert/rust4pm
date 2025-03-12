@@ -2,7 +2,7 @@ use crate::dfg::DirectlyFollowsGraph;
 use crate::event_log::event_log_struct::EventLogClassifier;
 use crate::event_log::{Attribute, Event, Trace, XESEditableAttribute};
 use crate::EventLog;
-use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
+use indicatif::{ParallelProgressIterator, ProgressBar, ProgressFinish, ProgressStyle};
 use petgraph::matrix_graph::Nullable;
 use primes::PrimeSet;
 use rand::rng;
@@ -15,8 +15,8 @@ use std::convert::TryFrom;
 use std::ops::{BitAnd, BitAndAssign, BitOrAssign};
 use tfhe::prelude::*;
 use tfhe::{
-    generate_keys, set_server_key, ClientKey, Config, ConfigBuilder, FheBool, FheUint32,
-    FheUint8, PublicKey, ServerKey,
+    generate_keys, set_server_key, ClientKey, Config, ConfigBuilder, FheBool, FheUint32, FheUint8,
+    PublicKey, ServerKey,
 };
 
 pub fn find_activities(event_log: &EventLog) -> HashSet<String> {
@@ -100,12 +100,15 @@ pub fn compute_case_to_trace_private(
     let name_to_trace: HashMap<&Attribute, &Trace> = event_log.find_name_trace_dictionary();
 
     let bar = ProgressBar::new(name_to_trace.len() as u64 as u64);
-    bar.set_style(ProgressStyle::with_template("[{elapsed_precise}/{eta_precise}] {wide_bar} {pos}/{len}")
-        .unwrap());
+    bar.set_style(
+        ProgressStyle::with_template("[{elapsed_precise}/{eta_precise}] {wide_bar} {pos}/{len}")
+            .unwrap(),
+    );
     println!("Encrypt data organization A");
     let result: HashMap<String, (Vec<FheUint8>, Vec<FheUint32>)> = name_to_trace
         .par_iter()
         .progress_with(bar)
+        .with_finish(ProgressFinish::AndLeave)
         .map(|(name, trace)| {
             (
                 name.value.try_as_string().unwrap().clone(),
@@ -146,8 +149,10 @@ pub fn compute_case_to_trace(
     let name_to_trace: HashMap<&Attribute, &Trace> = event_log.find_name_trace_dictionary();
 
     let bar = ProgressBar::new(name_to_trace.len() as u64);
-    bar.set_style(ProgressStyle::with_template("[{elapsed_precise}/{eta_precise}] {wide_bar} {pos}/{len}")
-        .unwrap());
+    bar.set_style(
+        ProgressStyle::with_template("[{elapsed_precise}/{eta_precise}] {wide_bar} {pos}/{len}")
+            .unwrap(),
+    );
     println!("Encrypt data organization B");
     let result: HashMap<String, (Vec<FheUint8>, Vec<u32>)> = name_to_trace
         .par_iter()
@@ -614,12 +619,17 @@ impl PublicKeyOrganization {
         let max_activities: u16 = u16::try_from(self.activity_to_pos.len() - 3 - 1).unwrap_or(0);
         let len = foreign_case_to_trace.len() as u64;
         let bar = ProgressBar::new(len);
-        bar.set_style(ProgressStyle::with_template("[{elapsed_precise}/{eta_precise}] {wide_bar} {pos}/{len}")
-            .unwrap());
-        
+        bar.set_style(
+            ProgressStyle::with_template(
+                "[{elapsed_precise}/{eta_precise}] {wide_bar} {pos}/{len}",
+            )
+            .unwrap(),
+        );
+
         foreign_case_to_trace
             .par_iter_mut()
             .progress_with(bar)
+            .with_finish(ProgressFinish::AndLeave)
             .for_each(|(_, (foreign_activities, _))| {
                 foreign_activities.iter_mut().for_each(|act| {
                     *act = act.max(max_activities);
@@ -648,12 +658,18 @@ impl PublicKeyOrganization {
         );
 
         let bar = ProgressBar::new(self.all_case_names.len() as u64);
-        bar.set_style(ProgressStyle::with_template("[{elapsed_precise}/{eta_precise}] {wide_bar} {pos}/{len}")
-            .unwrap());
+        bar.set_style(
+            ProgressStyle::with_template(
+                "[{elapsed_precise}/{eta_precise}] {wide_bar} {pos}/{len}",
+            )
+            .unwrap(),
+        );
         println!("Find all instructions");
-        self.instructions = self.all_case_names
+        self.instructions = self
+            .all_case_names
             .par_iter()
             .progress_with(bar)
+            .with_finish(ProgressFinish::AndLeave)
             .enumerate()
             .flat_map(|(case_pos, case_name)| {
                 let (foreign_activities, _) = self
@@ -668,11 +684,8 @@ impl PublicKeyOrganization {
                     .unwrap_or(&(Vec::new(), Vec::new()))
                     .to_owned();
 
-                find_instructions(
-                    case_pos,
-                    foreign_activities.len(),
-                    own_activities.len(),
-                )
-            }).collect();
+                find_instructions(case_pos, foreign_activities.len(), own_activities.len())
+            })
+            .collect();
     }
 }
