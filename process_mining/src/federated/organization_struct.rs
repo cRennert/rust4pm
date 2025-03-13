@@ -13,6 +13,7 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
 use std::ops::{BitAnd, BitAndAssign, BitOrAssign};
+use tfhe::core_crypto::prelude::Split;
 use tfhe::prelude::*;
 use tfhe::{
     generate_keys, set_server_key, ClientKey, Config, ConfigBuilder, FheBool, FheUint16, FheUint32,
@@ -97,25 +98,35 @@ pub fn compute_case_to_trace_private(
     private_key: &ClientKey,
     event_log: &EventLog,
 ) -> HashMap<String, (Vec<FheUint16>, Vec<FheUint32>)> {
-    let name_to_trace: HashMap<&Attribute, &Trace> = event_log.find_name_trace_dictionary();
+    let name_to_trace: HashMap<&String, &Trace> = event_log.find_name_trace_dictionary();
+    let name_to_trace_vec: Vec<(&String, &Trace)> =
+        name_to_trace.iter().map(|(&k, &v)| (k, v)).collect();
 
-    let bar = ProgressBar::new(name_to_trace.len() as u64 as u64);
+    let bar = ProgressBar::new(name_to_trace.len() as u64);
     bar.set_style(
-        ProgressStyle::with_template("[{elapsed_precise}/{eta_precise}] {wide_bar} {pos}/{len}")
-            .unwrap(),
+        ProgressStyle::with_template(
+            "[{elapsed_precise}/{eta_precise} - {per_sec}] {wide_bar} {pos}/{len}",
+        )
+        .unwrap(),
     );
     println!("Encrypt data organization A");
-    let result: HashMap<String, (Vec<FheUint16>, Vec<FheUint32>)> = name_to_trace
-        .par_iter()
+    let result: HashMap<String, (Vec<FheUint16>, Vec<FheUint32>)> = name_to_trace_vec
+        .par_chunks(3)
+        .into_par_iter()
         .progress_with(bar)
         .with_finish(ProgressFinish::AndLeave)
-        .map(|(name, trace)| {
-            (
-                name.value.try_as_string().unwrap().clone(),
-                preprocess_trace_private(activity_to_pos, private_key, trace),
-            )
+        .flat_map(|chunk| {
+            chunk
+                .into_iter()
+                .map(|&(name, trace)| {
+                    (
+                        name.clone(),
+                        preprocess_trace_private(activity_to_pos, private_key, trace),
+                    )
+                })
+                .collect::<Vec<_>>()
         })
-        .collect();
+        .collect::<HashMap<String, (Vec<FheUint16>, Vec<FheUint32>)>>();
 
     result
 }
@@ -146,25 +157,34 @@ pub fn compute_case_to_trace(
     public_key: &PublicKey,
     event_log: &EventLog,
 ) -> HashMap<String, (Vec<FheUint16>, Vec<u32>)> {
-    let name_to_trace: HashMap<&Attribute, &Trace> = event_log.find_name_trace_dictionary();
+    let name_to_trace: HashMap<&String, &Trace> = event_log.find_name_trace_dictionary();
+    let name_to_trace_vec: Vec<(&String, &Trace)> =
+        name_to_trace.iter().map(|(&k, &v)| (k, v)).collect();
 
     let bar = ProgressBar::new(name_to_trace.len() as u64);
     bar.set_style(
-        ProgressStyle::with_template("[{elapsed_precise}/{eta_precise}] {wide_bar} {pos}/{len}")
-            .unwrap(),
+        ProgressStyle::with_template(
+            "[{elapsed_precise}/{eta_precise} - {per_sec}] {wide_bar} {pos}/{len}",
+        )
+        .unwrap(),
     );
     println!("Encrypt data organization B");
-    let result: HashMap<String, (Vec<FheUint16>, Vec<u32>)> = name_to_trace
-        .par_iter()
+    let result: HashMap<String, (Vec<FheUint16>, Vec<u32>)> = name_to_trace_vec
+        .par_chunks(3)
+        .into_par_iter()
         .progress_with(bar)
-        .map(|(&name, &trace)| {
-            (
-                name.value.try_as_string().unwrap().clone(),
-                preprocess_trace(activity_to_pos, public_key, trace),
-            )
+        .flat_map(|chunk| {
+            chunk
+                .into_iter()
+                .map(|&(name, trace)| {
+                    (
+                        name.clone(),
+                        preprocess_trace(activity_to_pos, public_key, trace),
+                    )
+                })
+                .collect::<Vec<_>>()
         })
         .collect();
-
     result
 }
 
@@ -320,7 +340,6 @@ fn find_instructions(
         }
     }
 
-    instructions.shuffle(&mut rng());
     instructions
 }
 
@@ -617,14 +636,16 @@ impl PublicKeyOrganization {
     ) {
         println!("Sanitize activities from A in B");
         let max_activities: u16 = u16::try_from(self.activity_to_pos.len() - 3 - 1).unwrap_or(0);
+
         let len = foreign_case_to_trace.len() as u64;
         let bar = ProgressBar::new(len);
         bar.set_style(
             ProgressStyle::with_template(
-                "[{elapsed_precise}/{eta_precise}] {wide_bar} {pos}/{len}",
+                "[{elapsed_precise}/{eta_precise} - {per_sec}] {wide_bar} {pos}/{len}",
             )
-            .unwrap(),
+                .unwrap(),
         );
+
 
         foreign_case_to_trace
             .par_iter_mut()
@@ -660,7 +681,7 @@ impl PublicKeyOrganization {
         let bar = ProgressBar::new(self.all_case_names.len() as u64);
         bar.set_style(
             ProgressStyle::with_template(
-                "[{elapsed_precise}/{eta_precise}] {wide_bar} {pos}/{len}",
+                "[{elapsed_precise}/{eta_precise} - {per_sec}] {wide_bar} {pos}/{len}",
             )
             .unwrap(),
         );
@@ -687,5 +708,7 @@ impl PublicKeyOrganization {
                 find_instructions(case_pos, foreign_activities.len(), own_activities.len())
             })
             .collect();
+
+        self.instructions.shuffle(&mut rng());
     }
 }

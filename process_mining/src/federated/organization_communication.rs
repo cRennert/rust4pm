@@ -1,6 +1,6 @@
 use crate::dfg::DirectlyFollowsGraph;
 use crate::federated::organization_struct::{PrivateKeyOrganization, PublicKeyOrganization};
-use indicatif::ParallelProgressIterator;
+use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
 use rayon::iter::ParallelIterator;
 use rayon::prelude::IntoParallelIterator;
 use std::collections::HashMap;
@@ -27,9 +27,14 @@ pub fn communicate<'a>(
 
     // let mut unfinished = true;
 
+    let bar = ProgressBar::new(org_b.get_instructions_len() as u64);
+    bar.set_style(
+        ProgressStyle::with_template("[{elapsed_precise}/{eta_precise} - {per_sec}] {wide_bar} {pos}/{len}")
+            .unwrap(),
+    );
     let edges: Vec<(String, String)> = (0..org_b.get_instructions_len())
         .into_par_iter()
-        .progress_count(org_b.get_instructions_len() as u64)
+        .progress_with(bar)
         .filter_map(|pos| {
             let (secret, _) = org_b.compute_next_instruction(pos);
             match org_a.evaluate_secret_to_dfg(secret) {

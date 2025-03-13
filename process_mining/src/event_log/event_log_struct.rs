@@ -478,11 +478,18 @@ impl EventLog {
     ///
     /// Computes a dictionary from a trace's name to the trace for all traces in the event log
     ///
-    pub fn find_name_trace_dictionary(&self) -> HashMap<&Attribute, &Trace> {
-        let mut result: HashMap<&Attribute, &Trace> = HashMap::new();
+    pub fn find_name_trace_dictionary(&self) -> HashMap<&String, &Trace> {
+        let mut result: HashMap<&String, &Trace> = HashMap::new();
 
         self.traces.iter().for_each(|t| {
-            result.insert(self.get_trace_attribute(t, "concept:name").unwrap(), t);
+            result.insert(
+                self.get_trace_attribute(t, "concept:name")
+                    .unwrap()
+                    .value
+                    .try_as_string()
+                    .unwrap(),
+                t,
+            );
         });
 
         result
