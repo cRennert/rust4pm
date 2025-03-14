@@ -31,6 +31,6 @@ fn main() {
     let mut org_b = PublicKeyOrganization::new(log2);
 
     let result: DirectlyFollowsGraph =
-        organization_communication::communicate(&mut org_a, &mut org_b);
+        organization_communication::communicate(&mut org_a, &mut org_b, 100);
     export_dfg_image_png(&result, &output_path).unwrap();
 }

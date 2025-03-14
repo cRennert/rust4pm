@@ -108,7 +108,7 @@ pub fn compute_case_to_trace_private(
         )
         .unwrap(),
     );
-    println!("Encrypt data organization A");
+    bar.println("Encrypt data organization A");
     let result: HashMap<String, (Vec<FheUint16>, Vec<FheUint32>)> = name_to_trace_vec
         .into_par_iter()
         .progress_with(bar)
@@ -161,7 +161,7 @@ pub fn compute_case_to_trace(
         )
         .unwrap(),
     );
-    println!("Encrypt data organization B");
+    bar.println("Encrypt data organization B");
     let result: HashMap<String, (Vec<FheUint16>, Vec<u32>)> = name_to_trace_vec
         .into_par_iter()
         .progress_with(bar)
@@ -258,9 +258,26 @@ impl PrivateKeyOrganization {
         self.activity_to_pos.clone()
     }
 
-    pub fn evaluate_secrets_to_dfg<'a>(
+    pub fn decrypt_edges(
         &self,
         secret_edges: Vec<(FheUint16, FheUint16)>,
+        bar: &ProgressBar,
+    ) -> Vec<(u16, u16)> {
+        secret_edges
+            .into_par_iter()
+            .map(|(from, to)| {
+                let from_pos = self.decrypt_activity(from);
+                let to_pos = self.decrypt_activity(to);
+
+                bar.inc(1);
+                (from_pos, to_pos)
+            })
+            .collect::<Vec<(u16, u16)>>()
+    }
+
+    pub fn evaluate_decrypted_edges_to_dfg<'a>(
+        &self,
+        decrypted_edges: Vec<(u16, u16)>,
     ) -> DirectlyFollowsGraph<'a> {
         let mut result = DirectlyFollowsGraph::new();
         let mut found_edges_by_pos: HashMap<(u16, u16), u32> = HashMap::new();
@@ -276,38 +293,30 @@ impl PrivateKeyOrganization {
             pos_to_activity.insert(*pos, act.clone());
         });
 
-        let bar = ProgressBar::new(secret_edges.len() as u64);
+        let bar = ProgressBar::new(decrypted_edges.len() as u64);
         bar.set_style(
             ProgressStyle::with_template(
                 "[{elapsed_precise}/{eta_precise} - {per_sec}] {wide_bar} {pos}/{len}",
             )
             .unwrap(),
         );
-        println!("Decrypt & Create DFG");
-        let decrypted_edges = secret_edges
-            .into_par_iter()
+        bar.println("Create directly-follows graph from decrypted edges");
+        decrypted_edges
+            .into_iter()
             .progress_with(bar)
             .with_finish(ProgressFinish::AndLeave)
-            .map(|(from, to)| {
-                let from_pos = self.decrypt_activity(from);
-                let to_pos = self.decrypt_activity(to);
-
-                (from_pos, to_pos)
-            })
-            .collect::<Vec<(u16, u16)>>();
-
-        decrypted_edges.into_iter().for_each(|(from, to)| {
-            if (!pos_to_activity.get(&(from as usize)).unwrap().eq("bottom")
-                && !pos_to_activity.get(&(to as usize)).unwrap().eq("bottom"))
-            {
-                if found_edges_by_pos.contains_key(&(from, to)) {
-                    found_edges_by_pos
-                        .insert((from, to), found_edges_by_pos.get(&(from, to)).unwrap() + 1);
-                } else {
-                    found_edges_by_pos.insert((from, to), 1);
+            .for_each(|(from, to)| {
+                if (!pos_to_activity.get(&(from as usize)).unwrap().eq("bottom")
+                    && !pos_to_activity.get(&(to as usize)).unwrap().eq("bottom"))
+                {
+                    if found_edges_by_pos.contains_key(&(from, to)) {
+                        found_edges_by_pos
+                            .insert((from, to), found_edges_by_pos.get(&(from, to)).unwrap() + 1);
+                    } else {
+                        found_edges_by_pos.insert((from, to), 1);
+                    }
                 }
-            }
-        });
+            });
 
         for ((from_pos, to_pos), freq) in found_edges_by_pos {
             if pos_to_activity.contains_key(&(from_pos as usize))
@@ -360,6 +369,30 @@ impl PublicKeyOrganization {
         }
     }
 
+    pub fn get_cases_len(&self) -> usize {
+        self.all_case_names.len()
+    }
+
+    pub fn get_secret_edges_len(&self) -> usize {
+        let mut result = 0;
+        self.all_case_names.iter().for_each(|case_name| {
+            let (foreign_activities, _) = self
+                .foreign_case_to_trace
+                .get(case_name)
+                .unwrap_or(&(Vec::new(), Vec::new()))
+                .to_owned();
+
+            let (own_activities, _): (Vec<FheUint16>, Vec<u32>) = self
+                .own_case_to_trace
+                .get(case_name)
+                .unwrap_or(&(Vec::new(), Vec::new()))
+                .to_owned();
+
+            result += foreign_activities.len() + own_activities.len() + 1;
+        });
+        result
+    }
+
     pub fn set_public_keys(&mut self, public_key: PublicKey, server_key: ServerKey) {
         self.public_key = Some(public_key);
         set_server_key(server_key.clone());
@@ -395,7 +428,6 @@ impl PublicKeyOrganization {
         &mut self,
         mut foreign_case_to_trace: HashMap<String, (Vec<FheUint16>, Vec<FheUint32>)>,
     ) {
-        println!("Sanitize activities from A in B");
         let max_activities: u16 = u16::try_from(self.activity_to_pos.len() - 3).unwrap_or(0);
 
         let len = foreign_case_to_trace.len() as u64;
@@ -406,6 +438,7 @@ impl PublicKeyOrganization {
             )
             .unwrap(),
         );
+        bar.println("Sanitize activities from A in B");
 
         foreign_case_to_trace
             .par_iter_mut()
@@ -431,28 +464,28 @@ impl PublicKeyOrganization {
         all_case_names.extend(self.foreign_case_to_trace.keys().cloned());
 
         self.all_case_names = all_case_names.iter().cloned().collect();
+        self.all_case_names.shuffle(&mut rand::rng());
     }
 
-    pub fn find_all_secrets(&mut self) -> Vec<(FheUint16, FheUint16)> {
+    pub(crate) fn encrypt_all_data(&mut self) {
         self.own_case_to_trace = compute_case_to_trace(
             &self.activity_to_pos,
             self.public_key.as_ref().unwrap(),
             &self.event_log,
         );
+    }
 
-        let bar = ProgressBar::new(self.all_case_names.len() as u64);
-        bar.set_style(
-            ProgressStyle::with_template(
-                "[{elapsed_precise}/{eta_precise} - {per_sec}] {wide_bar} {pos}/{len}",
-            )
-            .unwrap(),
-        );
-        println!("Find all encrypted edges");
+    pub fn find_all_secrets(
+        &self,
+        start_case: usize,
+        upper_bound: usize,
+        bar: &ProgressBar,
+    ) -> Vec<(FheUint16, FheUint16)> {
         let mut result: Vec<(FheUint16, FheUint16)> = self
             .all_case_names
+            .get(start_case..upper_bound)
+            .unwrap()
             .par_iter()
-            .progress_with(bar)
-            .with_finish(ProgressFinish::AndLeave)
             .flat_map(|case_name| {
                 let (foreign_activities, foreign_timestamps) = self
                     .foreign_case_to_trace
@@ -466,12 +499,15 @@ impl PublicKeyOrganization {
                     .unwrap_or(&(Vec::new(), Vec::new()))
                     .to_owned();
 
-                self.find_secrets_for_case(
+                let intermediate_result = self.find_secrets_for_case(
                     foreign_activities,
                     foreign_timestamps,
                     own_activities,
                     own_timestamps,
-                )
+                );
+
+                bar.inc(1);
+                intermediate_result
             })
             .collect();
 
