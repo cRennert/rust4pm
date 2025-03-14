@@ -4,8 +4,6 @@ use crate::event_log::{Event, Trace, XESEditableAttribute};
 use crate::EventLog;
 use indicatif::ProgressIterator;
 use indicatif::{ParallelProgressIterator, ProgressBar, ProgressFinish, ProgressStyle};
-use petgraph::matrix_graph::Nullable;
-use primes::PrimeSet;
 use rand::rng;
 use rand::seq::SliceRandom;
 use rayon::prelude::*;
@@ -41,40 +39,35 @@ pub fn get_timestamp(event: &Event) -> u32 {
         .timestamp() as u32
 }
 
-pub fn encrypt_value_private(value: u32, private_key: &ClientKey) -> FheUint32 {
-    // FheUint32::encrypt(value, private_key)
-    FheUint32::encrypt_trivial(value)
+pub fn encrypt_value_private(value: u32, private_key: &ClientKey, debug: bool) -> FheUint32 {
+    if debug {
+        FheUint32::encrypt_trivial(value)
+    } else {
+        FheUint32::encrypt(value, private_key)
+    }
 }
 
-pub fn encrypt_activity_private(value: u16, private_key: &ClientKey) -> FheUint16 {
-    // FheUint16::encrypt(value, private_key)
-    FheUint16::encrypt_trivial(value)
+pub fn encrypt_activity_private(value: u16, private_key: &ClientKey, debug: bool) -> FheUint16 {
+    if debug {
+        FheUint16::encrypt_trivial(value)
+    } else {
+        FheUint16::encrypt(value, private_key)
+    }
 }
 
-pub fn encrypt_fhe_boolean_private(bool: bool, private_key: &ClientKey) -> FheBool {
-    // FheBool::encrypt(bool, private_key)
-    FheBool::encrypt_trivial(bool)
-}
-
-pub fn encrypt_value(value: u32, public_key: &PublicKey) -> FheUint32 {
-    // FheUint32::encrypt(value, public_key)
-    FheUint32::encrypt_trivial(value)
-}
-
-pub fn encrypt_activity(value: u16, public_key: &PublicKey) -> FheUint16 {
-    // FheUint16::encrypt(value, public_key)
-    FheUint16::encrypt_trivial(value)
-}
-
-pub fn encrypt_fhe_boolean(bool: bool, public_key: &PublicKey) -> FheBool {
-    // FheBool::encrypt(bool, public_key)
-    FheBool::encrypt_trivial(bool)
+pub fn encrypt_activity(value: u16, public_key: &PublicKey, debug: bool) -> FheUint16 {
+    if debug {
+        FheUint16::encrypt_trivial(value)
+    } else {
+        FheUint16::encrypt(value, public_key)
+    }
 }
 
 pub fn preprocess_trace_private(
     activity_to_pos: &HashMap<String, usize>,
     private_key: &ClientKey,
     trace: &Trace,
+    debug: bool,
 ) -> (Vec<FheUint16>, Vec<FheUint32>) {
     let mut activities: Vec<FheUint16> = Vec::with_capacity(trace.events.len());
     let mut timestamps: Vec<FheUint32> = Vec::with_capacity(trace.events.len());
@@ -85,8 +78,8 @@ pub fn preprocess_trace_private(
         let activity: String = classifier.get_class_identity(event);
         let activity_pos: u16 =
             u16::try_from(activity_to_pos.get(&activity).unwrap().clone()).unwrap_or(0);
-        activities.push(encrypt_activity_private(activity_pos, private_key));
-        timestamps.push(encrypt_value_private(get_timestamp(event), private_key));
+        activities.push(encrypt_activity_private(activity_pos, private_key, debug));
+        timestamps.push(encrypt_value_private(get_timestamp(event), private_key, debug));
     });
 
     (activities, timestamps)
@@ -96,6 +89,7 @@ pub fn compute_case_to_trace_private(
     activity_to_pos: &HashMap<String, usize>,
     private_key: &ClientKey,
     event_log: &EventLog,
+    debug: bool,
 ) -> HashMap<String, (Vec<FheUint16>, Vec<FheUint32>)> {
     let name_to_trace: HashMap<&String, &Trace> = event_log.find_name_trace_dictionary();
     let name_to_trace_vec: Vec<(&String, &Trace)> =
@@ -116,7 +110,7 @@ pub fn compute_case_to_trace_private(
         .map(|(name, trace)| {
             (
                 name.clone(),
-                preprocess_trace_private(activity_to_pos, private_key, trace),
+                preprocess_trace_private(activity_to_pos, private_key, trace, debug),
             )
         })
         .collect::<HashMap<String, (Vec<FheUint16>, Vec<FheUint32>)>>();
@@ -128,6 +122,7 @@ pub fn preprocess_trace(
     activity_to_pos: &HashMap<String, usize>,
     public_key: &PublicKey,
     trace: &Trace,
+    debug: bool,
 ) -> (Vec<FheUint16>, Vec<u32>) {
     let mut activities: Vec<FheUint16> = Vec::with_capacity(trace.events.len());
     let mut timestamps: Vec<u32> = Vec::with_capacity(trace.events.len());
@@ -138,7 +133,7 @@ pub fn preprocess_trace(
         let activity: String = classifier.get_class_identity(event);
         let activity_pos: u16 =
             u16::try_from(activity_to_pos.get(&activity).unwrap().clone()).unwrap_or(0);
-        activities.push(encrypt_activity(activity_pos, public_key));
+        activities.push(encrypt_activity(activity_pos, public_key, debug));
         timestamps.push(get_timestamp(event));
     });
 
@@ -149,6 +144,7 @@ pub fn compute_case_to_trace(
     activity_to_pos: &HashMap<String, usize>,
     public_key: &PublicKey,
     event_log: &EventLog,
+    debug: bool,
 ) -> HashMap<String, (Vec<FheUint16>, Vec<u32>)> {
     let name_to_trace: HashMap<&String, &Trace> = event_log.find_name_trace_dictionary();
     let name_to_trace_vec: Vec<(&String, &Trace)> =
@@ -168,7 +164,7 @@ pub fn compute_case_to_trace(
         .map(|(name, trace)| {
             (
                 name.clone(),
-                preprocess_trace(activity_to_pos, public_key, trace),
+                preprocess_trace(activity_to_pos, public_key, trace, debug),
             )
         })
         .collect();
@@ -182,10 +178,11 @@ pub struct PrivateKeyOrganization {
     event_log: EventLog,
     activity_to_pos: HashMap<String, usize>,
     pos_to_activity: HashMap<usize, String>,
+    debug: bool,
 }
 
 impl PrivateKeyOrganization {
-    pub fn new(event_log: EventLog) -> Self {
+    pub fn new(event_log: EventLog, debug: bool) -> Self {
         let config: Config = ConfigBuilder::default().build();
         let (private_key, server_key): (ClientKey, ServerKey) = generate_keys(config);
         let public_key = PublicKey::new(&private_key);
@@ -196,6 +193,7 @@ impl PrivateKeyOrganization {
             event_log,
             activity_to_pos: HashMap::new(),
             pos_to_activity: HashMap::new(),
+            debug,
         }
     }
 
@@ -225,7 +223,7 @@ impl PrivateKeyOrganization {
     }
 
     pub fn encrypt_all_data(&self) -> HashMap<String, (Vec<FheUint16>, Vec<FheUint32>)> {
-        compute_case_to_trace_private(&self.activity_to_pos, &self.private_key, &self.event_log)
+        compute_case_to_trace_private(&self.activity_to_pos, &self.private_key, &self.event_log, self.debug)
     }
 
     pub fn get_public_keys(&self) -> (ServerKey, PublicKey) {
@@ -352,10 +350,11 @@ pub struct PublicKeyOrganization {
     end: Option<FheUint16>,
     bottom: Option<FheUint16>,
     all_case_names: Vec<String>,
+    debug: bool,
 }
 
 impl PublicKeyOrganization {
-    pub fn new(event_log: EventLog) -> Self {
+    pub fn new(event_log: EventLog, debug: bool) -> Self {
         Self {
             public_key: None,
             event_log,
@@ -366,6 +365,7 @@ impl PublicKeyOrganization {
             end: None,
             bottom: None,
             all_case_names: Vec::new(),
+            debug,
         }
     }
 
@@ -409,14 +409,17 @@ impl PublicKeyOrganization {
         self.bottom = Some(encrypt_activity(
             activities_len - 3,
             self.public_key.as_ref().unwrap(),
+            self.debug,
         ));
         self.start = Some(encrypt_activity(
             activities_len - 2,
             self.public_key.as_ref().unwrap(),
+            self.debug,
         ));
         self.end = Some(encrypt_activity(
             activities_len - 1,
             self.public_key.as_ref().unwrap(),
+            self.debug,
         ));
     }
 
@@ -472,6 +475,7 @@ impl PublicKeyOrganization {
             &self.activity_to_pos,
             self.public_key.as_ref().unwrap(),
             &self.event_log,
+            self.debug,
         );
     }
 
@@ -548,10 +552,7 @@ impl PublicKeyOrganization {
             self.start.as_ref().unwrap().clone(),
             comparison_foreign_to_own
                 .get(&(0, 0))
-                .unwrap_or(&encrypt_fhe_boolean(
-                    !foreign_activities.is_empty(),
-                    self.public_key.as_ref().unwrap(),
-                ))
+                .unwrap()
                 .select(&foreign_activities[0], &own_activities[0]),
         ));
 

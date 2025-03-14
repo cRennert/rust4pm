@@ -26,9 +26,11 @@ fn main() {
     let log1 = import_xes_file(path1, options.clone()).unwrap();
     let log2 = import_xes_file(path2, options).unwrap();
 
+    let debug = false;
+    
     //setup keys
-    let mut org_a = PrivateKeyOrganization::new(log1);
-    let mut org_b = PublicKeyOrganization::new(log2);
+    let mut org_a = PrivateKeyOrganization::new(log1, debug);
+    let mut org_b = PublicKeyOrganization::new(log2, debug);
 
     let result: DirectlyFollowsGraph =
         organization_communication::communicate(&mut org_a, &mut org_b, 100);

@@ -1,7 +1,6 @@
 use crate::dfg::DirectlyFollowsGraph;
 use crate::federated::organization_struct::{PrivateKeyOrganization, PublicKeyOrganization};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use rayon::prelude::*;
 use std::collections::HashMap;
 use tfhe::{FheUint16, FheUint32};
 
@@ -26,7 +25,6 @@ pub fn communicate<'a>(
     org_b.encrypt_all_data();
 
     let max_size = org_b.get_cases_len();
-    let window_size = 100;
 
     let multi_bar = MultiProgress::new();
 
