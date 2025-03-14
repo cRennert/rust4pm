@@ -1,7 +1,9 @@
+use rayon::iter::ParallelIterator;
 use crate::dfg::DirectlyFollowsGraph;
 use crate::federated::organization_struct::{PrivateKeyOrganization, PublicKeyOrganization};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::collections::HashMap;
+use rayon::prelude::IntoParallelIterator;
 use tfhe::{FheUint16, FheUint32};
 
 pub fn communicate<'a>(
@@ -11,18 +13,22 @@ pub fn communicate<'a>(
 ) -> DirectlyFollowsGraph<'a> {
     println!("Start communication");
 
-    let (server_key, public_key) = org_a.get_public_keys();
-    org_b.set_public_keys(public_key, server_key);
+    let server_key = org_a.get_server_key();
+    org_b.set_server_key(server_key);
 
     let activities_b = org_b.find_activities();
     let agreed_activity_to_pos = org_a.update_with_foreign_activities(activities_b);
-    org_b.set_activity_to_pos(agreed_activity_to_pos);
+    let mut sample_encryptions: HashMap<u16, FheUint16> = org_a.provide_sample_encryptions();
+    org_b.sanitize_sample_encryptions(&mut sample_encryptions);
+    
+    org_b.set_activity_to_pos(agreed_activity_to_pos, &sample_encryptions);
 
     let org_a_encrypted_data: HashMap<String, (Vec<FheUint16>, Vec<FheUint32>)> =
         org_a.encrypt_all_data();
     org_b.set_foreign_case_to_trace(org_a_encrypted_data);
     org_b.compute_all_case_names();
-    org_b.encrypt_all_data();
+
+    org_b.encrypt_all_data(&sample_encryptions);
 
     let max_size = org_b.get_cases_len();
 

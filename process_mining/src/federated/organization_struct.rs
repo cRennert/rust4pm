@@ -10,7 +10,7 @@ use rayon::prelude::*;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
-use std::ops::Not;
+use std::ops::{Not, Sub};
 use tfhe::prelude::*;
 use tfhe::{
     generate_keys, set_server_key, ClientKey, Config, ConfigBuilder, FheBool, FheUint16, FheUint32,
@@ -55,14 +55,6 @@ pub fn encrypt_activity_private(value: u16, private_key: &ClientKey, debug: bool
     }
 }
 
-pub fn encrypt_activity(value: u16, public_key: &PublicKey, debug: bool) -> FheUint16 {
-    if debug {
-        FheUint16::encrypt_trivial(value)
-    } else {
-        FheUint16::encrypt(value, public_key)
-    }
-}
-
 pub fn preprocess_trace_private(
     activity_to_pos: &HashMap<String, usize>,
     private_key: &ClientKey,
@@ -79,7 +71,11 @@ pub fn preprocess_trace_private(
         let activity_pos: u16 =
             u16::try_from(activity_to_pos.get(&activity).unwrap().clone()).unwrap_or(0);
         activities.push(encrypt_activity_private(activity_pos, private_key, debug));
-        timestamps.push(encrypt_value_private(get_timestamp(event), private_key, debug));
+        timestamps.push(encrypt_value_private(
+            get_timestamp(event),
+            private_key,
+            debug,
+        ));
     });
 
     (activities, timestamps)
@@ -120,31 +116,30 @@ pub fn compute_case_to_trace_private(
 
 pub fn preprocess_trace(
     activity_to_pos: &HashMap<String, usize>,
-    public_key: &PublicKey,
     trace: &Trace,
-    debug: bool,
+    sample_encryptions: &HashMap<u16, FheUint16>, // debug: bool,
 ) -> (Vec<FheUint16>, Vec<u32>) {
-    let mut activities: Vec<FheUint16> = Vec::with_capacity(trace.events.len());
-    let mut timestamps: Vec<u32> = Vec::with_capacity(trace.events.len());
-
     let classifier = EventLogClassifier::default();
 
-    trace.events.iter().for_each(|event| {
-        let activity: String = classifier.get_class_identity(event);
-        let activity_pos: u16 =
-            u16::try_from(activity_to_pos.get(&activity).unwrap().clone()).unwrap_or(0);
-        activities.push(encrypt_activity(activity_pos, public_key, debug));
-        timestamps.push(get_timestamp(event));
-    });
-
-    (activities, timestamps)
+    trace
+        .events
+        .par_iter()
+        .map(|event| {
+            let activity: String = classifier.get_class_identity(event);
+            let activity_pos: u16 =
+                u16::try_from(activity_to_pos.get(&activity).unwrap().clone()).unwrap_or(0);
+            (
+                sample_encryptions.get(&activity_pos).unwrap() + 0,
+                get_timestamp(event),
+            )
+        })
+        .collect::<(Vec<FheUint16>, Vec<u32>)>()
 }
 
 pub fn compute_case_to_trace(
     activity_to_pos: &HashMap<String, usize>,
-    public_key: &PublicKey,
     event_log: &EventLog,
-    debug: bool,
+    sample_encryptions: &HashMap<u16, FheUint16>,
 ) -> HashMap<String, (Vec<FheUint16>, Vec<u32>)> {
     let name_to_trace: HashMap<&String, &Trace> = event_log.find_name_trace_dictionary();
     let name_to_trace_vec: Vec<(&String, &Trace)> =
@@ -161,10 +156,11 @@ pub fn compute_case_to_trace(
     let result: HashMap<String, (Vec<FheUint16>, Vec<u32>)> = name_to_trace_vec
         .into_par_iter()
         .progress_with(bar)
+        .with_finish(ProgressFinish::AndLeave)
         .map(|(name, trace)| {
             (
                 name.clone(),
-                preprocess_trace(activity_to_pos, public_key, trace, debug),
+                preprocess_trace(activity_to_pos, trace, sample_encryptions),
             )
         })
         .collect();
@@ -174,7 +170,6 @@ pub fn compute_case_to_trace(
 pub struct PrivateKeyOrganization {
     private_key: ClientKey,
     server_key: ServerKey,
-    public_key: PublicKey,
     event_log: EventLog,
     activity_to_pos: HashMap<String, usize>,
     pos_to_activity: HashMap<usize, String>,
@@ -185,11 +180,9 @@ impl PrivateKeyOrganization {
     pub fn new(event_log: EventLog, debug: bool) -> Self {
         let config: Config = ConfigBuilder::default().build();
         let (private_key, server_key): (ClientKey, ServerKey) = generate_keys(config);
-        let public_key = PublicKey::new(&private_key);
         Self {
             private_key,
             server_key,
-            public_key,
             event_log,
             activity_to_pos: HashMap::new(),
             pos_to_activity: HashMap::new(),
@@ -223,11 +216,29 @@ impl PrivateKeyOrganization {
     }
 
     pub fn encrypt_all_data(&self) -> HashMap<String, (Vec<FheUint16>, Vec<FheUint32>)> {
-        compute_case_to_trace_private(&self.activity_to_pos, &self.private_key, &self.event_log, self.debug)
+        compute_case_to_trace_private(
+            &self.activity_to_pos,
+            &self.private_key,
+            &self.event_log,
+            self.debug,
+        )
     }
 
-    pub fn get_public_keys(&self) -> (ServerKey, PublicKey) {
-        (self.server_key.clone(), self.public_key.clone())
+    pub fn provide_sample_encryptions(&self) -> HashMap<u16, FheUint16> {
+        self.pos_to_activity
+            .par_iter()
+            .map(|(pos, _)| {
+                let pos_u16 = u16::try_from(*pos).unwrap();
+                (
+                    pos_u16,
+                    encrypt_activity_private(pos_u16, &self.private_key, self.debug),
+                )
+            })
+            .collect::<HashMap<u16, FheUint16>>()
+    }
+
+    pub fn get_server_key(&self) -> ServerKey {
+        self.server_key.clone()
     }
 
     pub fn update_with_foreign_activities(
@@ -341,7 +352,6 @@ impl PrivateKeyOrganization {
 }
 
 pub struct PublicKeyOrganization {
-    public_key: Option<PublicKey>,
     event_log: EventLog,
     activity_to_pos: HashMap<String, usize>,
     own_case_to_trace: HashMap<String, (Vec<FheUint16>, Vec<u32>)>,
@@ -350,13 +360,11 @@ pub struct PublicKeyOrganization {
     end: Option<FheUint16>,
     bottom: Option<FheUint16>,
     all_case_names: Vec<String>,
-    debug: bool,
 }
 
 impl PublicKeyOrganization {
-    pub fn new(event_log: EventLog, debug: bool) -> Self {
+    pub fn new(event_log: EventLog) -> Self {
         Self {
-            public_key: None,
             event_log,
             own_case_to_trace: HashMap::new(),
             foreign_case_to_trace: HashMap::new(),
@@ -365,7 +373,6 @@ impl PublicKeyOrganization {
             end: None,
             bottom: None,
             all_case_names: Vec::new(),
-            debug,
         }
     }
 
@@ -393,8 +400,7 @@ impl PublicKeyOrganization {
         result
     }
 
-    pub fn set_public_keys(&mut self, public_key: PublicKey, server_key: ServerKey) {
-        self.public_key = Some(public_key);
+    pub fn set_server_key(&mut self, server_key: ServerKey) {
         set_server_key(server_key.clone());
         rayon::broadcast(|_| set_server_key(server_key.clone()));
     }
@@ -403,28 +409,54 @@ impl PublicKeyOrganization {
         find_activities(&self.event_log)
     }
 
-    pub fn set_activity_to_pos(&mut self, activity_to_pos: HashMap<String, usize>) {
+    pub fn set_activity_to_pos(
+        &mut self,
+        activity_to_pos: HashMap<String, usize>,
+        sample_encryptions: &HashMap<u16, FheUint16>,
+    ) {
         self.activity_to_pos = activity_to_pos;
         let activities_len = u16::try_from(self.activity_to_pos.len()).unwrap();
-        self.bottom = Some(encrypt_activity(
-            activities_len - 3,
-            self.public_key.as_ref().unwrap(),
-            self.debug,
-        ));
-        self.start = Some(encrypt_activity(
-            activities_len - 2,
-            self.public_key.as_ref().unwrap(),
-            self.debug,
-        ));
-        self.end = Some(encrypt_activity(
-            activities_len - 1,
-            self.public_key.as_ref().unwrap(),
-            self.debug,
-        ));
+        self.bottom = Some(
+            sample_encryptions
+                .get(&(activities_len - 3))
+                .unwrap()
+                .clone(),
+        );
+        self.start = Some(
+            sample_encryptions
+                .get(&(activities_len - 2))
+                .unwrap()
+                .clone(),
+        );
+        self.end = Some(
+            sample_encryptions
+                .get(&(activities_len - 1))
+                .unwrap()
+                .clone(),
+        );
     }
 
     fn comparison_fn(&self, val1: &FheUint32, val2: &u32) -> FheBool {
         val1.le(*val2)
+    }
+
+    pub(crate) fn sanitize_sample_encryptions(
+        &self,
+        sample_encryptions: &mut HashMap<u16, FheUint16>,
+    ) {
+        sample_encryptions.iter().for_each(|(val, _)| {
+            if *val >= u16::try_from(sample_encryptions.len()).unwrap_or(0) {
+                panic!()
+            }
+        });
+
+        let zero = sample_encryptions.get(&0).unwrap() - sample_encryptions.get(&0).unwrap();
+
+        sample_encryptions
+            .par_iter_mut()
+            .for_each(|(val, encrypted_val)| {
+                *encrypted_val = encrypted_val.eq(*val).select(encrypted_val, &zero);
+            })
     }
 
     pub fn set_foreign_case_to_trace(
@@ -451,7 +483,7 @@ impl PublicKeyOrganization {
                 foreign_activities.iter_mut().for_each(|act| {
                     *act = act
                         .ge(max_activities)
-                        .select(self.start.as_ref().unwrap(), &act);
+                        .select(self.bottom.as_ref().unwrap(), &act);
                 });
             });
 
@@ -470,13 +502,9 @@ impl PublicKeyOrganization {
         self.all_case_names.shuffle(&mut rand::rng());
     }
 
-    pub(crate) fn encrypt_all_data(&mut self) {
-        self.own_case_to_trace = compute_case_to_trace(
-            &self.activity_to_pos,
-            self.public_key.as_ref().unwrap(),
-            &self.event_log,
-            self.debug,
-        );
+    pub(crate) fn encrypt_all_data(&mut self, sample_encryptions: &HashMap<u16, FheUint16>) {
+        self.own_case_to_trace =
+            compute_case_to_trace(&self.activity_to_pos, &self.event_log, sample_encryptions);
     }
 
     pub fn find_all_secrets(

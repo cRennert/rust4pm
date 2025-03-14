@@ -30,7 +30,7 @@ fn main() {
     
     //setup keys
     let mut org_a = PrivateKeyOrganization::new(log1, debug);
-    let mut org_b = PublicKeyOrganization::new(log2, debug);
+    let mut org_b = PublicKeyOrganization::new(log2);
 
     let result: DirectlyFollowsGraph =
         organization_communication::communicate(&mut org_a, &mut org_b, 100);
