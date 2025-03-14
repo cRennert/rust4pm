@@ -589,7 +589,7 @@ impl PublicKeyOrganization {
                 .into_par_iter()
                 .map(|i| {
                     (
-                        foreign_activities.get(i).unwrap() + 0,
+                        foreign_activities.get(i).unwrap().clone(),
                         self.find_following_activity(
                             i,
                             foreign_activities.get(i + 1).unwrap(),
@@ -607,7 +607,7 @@ impl PublicKeyOrganization {
                 .into_par_iter()
                 .map(|j| {
                     (
-                        own_activities.get(j).unwrap() + 0,
+                        own_activities.get(j).unwrap().clone(),
                         self.find_following_activity(
                             j,
                             own_activities.get(j + 1).unwrap(),
@@ -621,7 +621,7 @@ impl PublicKeyOrganization {
         );
 
         result.push((
-            foreign_activities.last().unwrap() + 0,
+            foreign_activities.last().unwrap().clone(),
             self.handle_last(
                 foreign_activities.len() - 1,
                 &own_activities,
@@ -630,7 +630,7 @@ impl PublicKeyOrganization {
         ));
 
         result.push((
-            own_activities.last().unwrap() + 0,
+            own_activities.last().unwrap().clone(),
             self.handle_last(
                 own_activities.len() - 1,
                 &foreign_activities,
@@ -659,8 +659,8 @@ impl PublicKeyOrganization {
 
         for i in 0..activities.len() - 1 {
             result.push((
-                activities.get(i).unwrap() + 0,
-                activities.get(i + 1).unwrap() + 0,
+                activities.get(i).unwrap().clone(),
+                activities.get(i + 1).unwrap().clone(),
             ));
         }
     }

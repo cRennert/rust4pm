@@ -1,9 +1,7 @@
-use rayon::iter::ParallelIterator;
 use crate::dfg::DirectlyFollowsGraph;
 use crate::federated::organization_struct::{PrivateKeyOrganization, PublicKeyOrganization};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::collections::HashMap;
-use rayon::prelude::IntoParallelIterator;
 use tfhe::{FheUint16, FheUint32};
 
 pub fn communicate<'a>(
